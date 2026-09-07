@@ -540,5 +540,42 @@ class TestCsv(unittest.TestCase):
         self.assertEqual(len(self.out_rows()), 1)
 
 
+class TestPathHandling(unittest.TestCase):
+    """A path that does not exist is a typo. Classifying it as bounce text
+    hides the mistake and sends you looking in the wrong place."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def run_main(self, argv):
+        import contextlib
+        old = sys.argv
+        sys.argv = ["bouncesitrep"] + argv
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                return bc.main(), err.getvalue()
+        finally:
+            sys.argv = old
+
+    def test_missing_csv_is_an_error(self):
+        code, err = self.run_main([os.path.join(self.tmp, "nope.csv")])
+        self.assertEqual(code, 1)
+        self.assertIn("no such file", err)
+
+    def test_a_directory_named_csv_is_an_error(self):
+        d = os.path.join(self.tmp, "adir.csv")
+        os.makedirs(d)
+        code, err = self.run_main([d])
+        self.assertEqual(code, 1)
+        self.assertIn("directory", err)
+
+    def test_a_real_message_is_still_classified(self):
+        code, err = self.run_main(["550 5.1.1 user unknown"])
+        self.assertEqual(code, 0)
+        self.assertEqual(err, "")
+
+
 if __name__ == "__main__":
     unittest.main()

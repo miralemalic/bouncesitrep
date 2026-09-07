@@ -921,7 +921,17 @@ def main():
     QUIET = args.quiet
 
     path = os.path.expanduser(args.input)
-    if os.path.isfile(path) and path.lower().endswith((".csv", ".tsv")):
+    # Anything ending .csv/.tsv was meant to be a file. No bounce message ever
+    # ends that way, so a missing one is a typo, not something to classify --
+    # silently treating the path as bounce text sends you looking in the wrong
+    # place entirely.
+    if path.lower().endswith((".csv", ".tsv")):
+        if os.path.isdir(path):
+            print(f"{args.input}: is a directory, not a file", file=sys.stderr)
+            return 1
+        if not os.path.isfile(path):
+            print(f"{args.input}: no such file", file=sys.stderr)
+            return 1
         return run_csv(path, args)
     return run_one(args.input, args.json)
 
