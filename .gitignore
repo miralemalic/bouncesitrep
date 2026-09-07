@@ -1,0 +1,25 @@
+# Bounce data is other people's mail. It never belongs in this repo.
+*.csv
+*.tsv
+*.jsonl
+*.ndjson
+*.json
+*.txt
+*.log
+corpus/
+!requirements*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+._*
+Thumbs.db
