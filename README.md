@@ -219,6 +219,10 @@ If it scores worse on your corpus, that is a real result and I want the sample.
   servers, and it is the right tool for that job. This one starts where the API
   hands you a string.
 - English NDRs. Other languages fall through to status codes, which still work.
+- RFC 3463 coverage is complete across the address, mailbox, network, protocol,
+  media and security families. Provider codes cover Microsoft, Google, Yahoo,
+  AOL, Verizon, Proofpoint, Mimecast, Barracuda, Sophos and Open-Xchange.
+  Anything else falls back to matching the prose.
 - The corpus is cold email to US small business domains, so the mix leans that
   way. Transactional or European senders will see different proportions, though
   the rules themselves are not region-specific.
@@ -231,7 +235,7 @@ If it scores worse on your corpus, that is a real result and I want the sample.
 python3 -m unittest discover -s tests -v
 ```
 
-71 tests, standard library only. Three of them are structural rather than
+88 tests, standard library only. Three of them are structural rather than
 example-based: no sending-side fault may suppress an address, no transient
 fault may suppress, and no data fault may pause a domain. Those are the
 mistakes that cost real money, so they run against every entry in the table

@@ -66,6 +66,26 @@ REASONS = {
         "That server does not handle mail for this address", DATA, SUPPRESS),
     "syntax_error": (
         "The address is malformed", DATA, SUPPRESS),
+    "ambiguous_address": (
+        "The address matches more than one mailbox at the receiver",
+        DATA, REVIEW),
+    "sender_address_bad": (
+        "Your own return address is malformed or its domain will not accept mail",
+        AUTH, FIXAUTH),
+    "protocol_error": (
+        "The two servers could not agree on how to hand the message over",
+        TRANSIENT, RETRY),
+    "media_error": (
+        "The receiver cannot handle the message's format or encoding",
+        CONTENT, REVIEW),
+    "crypto_error": (
+        "TLS or message signing failed between the servers", AUTH, REVIEW),
+    "list_expansion": (
+        "The address is a mailing list the receiver would not expand",
+        RECIPIENT, REVIEW),
+    "throttled": (
+        "The receiver is deferring you for sending too fast or drawing complaints",
+        REPUTATION, RETRY),
     "has_moved": (
         "The address has moved and forwarding is off", DATA, SUPPRESS),
 
@@ -187,6 +207,15 @@ RULES = [
     R(T_TOKEN, r'\bXGEMAIL_\d+', "blocked", "Sophos gateway rejected the message"),
     R(T_TOKEN, r'\bOXSUS\d+_\d+', "blocked", "Open-Xchange gateway rejected the sender"),
     R(T_TOKEN, r'\bS\d{9,}\b', "blocked", "Barracuda-style gateway rejection code"),
+    # Yahoo and AOL bracket a short code into the text. TS/TSS are throttles
+    # and read as temporary; the dashboards that only show 4xx-vs-5xx lose
+    # that distinction entirely.
+    R(T_TOKEN, r'\[TSS?\d{2}\]|\bTSS0[1-4]\b|\bTS0[1-4]\b', "throttled",
+      "Yahoo/AOL deferral - too much volume or too many complaints"),
+    R(T_TOKEN, r'\bPH0[1-9]\b|\bIPv6 connections are not accepted\b', "blocked",
+      "Verizon/Yahoo policy rejection code"),
+    R(T_TOKEN, r'\bHVU:B1\b|\bVS3140\b|\bDNSBL:', "blocklisted",
+      "Yahoo reputation or blocklist rejection"),
 
     # ------------------------------------------------------- named blocklists
     R(T_BLOCKLIST, r'\b(?:dbl|zen|sbl|xbl|pbl|css)\.spamhaus\.org|spamhaus',
@@ -214,12 +243,37 @@ RULES = [
     R(T_ESC, r'\b[45]\.7\.30\b', "rate_limited", "receiver rate limit"),
     R(T_ESC, r'\b5\.1\.(?:[0-36]|10)\b', "user_unknown", "address does not exist"),
     R(T_ESC, r'\b5\.4\.1\b', "user_unknown", "no route to the recipient address"),
-    R(T_ESC, r'\b5\.2\.2\b', "mailbox_full", "mailbox over quota, permanent"),
+    R(T_ESC, r'\b5\.2\.2\b', "mailbox_full",
+      "over quota - permanent code, but mailboxes do get emptied"),
     R(T_ESC, r'\b5\.2\.1\b', "suspended", "mailbox disabled"),
     R(T_ESC, r'\b5\.3\.4\b', "email_too_large", "message above the size limit"),
     R(T_ESC, r'\b4\.2\.2\b', "mailbox_full", "mailbox over quota, temporary"),
     R(T_ESC, r'\b4\.4\.[17]\b', "expired", "delivery attempts timed out"),
     R(T_ESC, r'\b4\.3\.\d+\b', "system_error", "receiving system problem"),
+    # Yahoo's own policy refusal. Sender-side, and distinct from 5.7.1.
+    R(T_ESC, r'\b5\.7\.9\b', "policy_violation",
+      "Yahoo: refused on policy, usually DMARC or content"),
+    R(T_ESC, r'\b[45]\.7\.2\b', "list_expansion",
+      "the receiver refuses to expand this list"),
+    R(T_ESC, r'\b[45]\.7\.0\b', "policy_violation", "refused on security policy"),
+    R(T_ESC, r'\b[45]\.7\.[4-7]\b', "crypto_error", "TLS or signing failure"),
+    # X.1.x address family
+    R(T_ESC, r'\b5\.1\.4\b', "ambiguous_address", "address matches several mailboxes"),
+    R(T_ESC, r'\b[45]\.1\.[78]\b', "sender_address_bad",
+      "your return address or its domain is the problem"),
+    # X.2.x mailbox family
+    R(T_ESC, r'\b[45]\.2\.3\b', "email_too_large", "over the receiver's size limit"),
+    R(T_ESC, r'\b[45]\.2\.4\b', "list_expansion", "mailing list expansion problem"),
+    # X.4.x network family
+    R(T_ESC, r'\b[45]\.4\.6\b', "mail_loop", "routing loop detected"),
+    R(T_ESC, r'\b[45]\.4\.4\b', "host_unknown", "no route to the destination"),
+    R(T_ESC, r'\b[45]\.4\.[025]\b', "network_error", "network or connection failure"),
+    # X.5.x protocol family
+    R(T_ESC, r'\b[45]\.5\.3\b', "protocol_error",
+      "more recipients in one transaction than the receiver allows"),
+    R(T_ESC, r'\b[45]\.5\.[0-2456]\b', "protocol_error", "SMTP protocol disagreement"),
+    # X.6.x content family
+    R(T_ESC, r'\b[45]\.6\.\d+\b', "media_error", "message format or encoding rejected"),
 
     # ---------------------------------------------------------------- phrases
     R(T_TEXT, r'over quota|quota exceeded|out of storage|mailbox (?:is )?full|'

@@ -540,6 +540,97 @@ class TestCsv(unittest.TestCase):
         self.assertEqual(len(self.out_rows()), 1)
 
 
+class TestRfc3463Families(unittest.TestCase):
+    """The RFC defines whole families this originally had holes in. A code the
+    tool does not know falls through to prose, which is a worse guess."""
+
+    def test_address_family(self):
+        self.assertEqual(cls("550 5.1.4 address ambiguous")["reason"],
+                         "ambiguous_address")
+        for code in ("5.1.7", "5.1.8"):
+            with self.subTest(code=code):
+                r = cls(f"550 {code} bad sender address")
+                self.assertEqual((r["reason"], r["category"]),
+                                 ("sender_address_bad", bc.AUTH))
+
+    def test_your_own_return_address_is_your_problem(self):
+        """5.1.7/5.1.8 are about the SENDER, not the recipient. Suppressing
+        the recipient over it would delete a good lead."""
+        r = cls("550 5.1.8 Bad sender's system address")
+        self.assertNotEqual(r["action"], bc.SUPPRESS)
+        self.assertEqual(r["action"], bc.FIXAUTH)
+
+    def test_mailbox_family(self):
+        self.assertEqual(cls("552 5.2.3 message length exceeds limit")["reason"],
+                         "email_too_large")
+        self.assertEqual(cls("550 5.2.4 mailing list expansion problem")["reason"],
+                         "list_expansion")
+
+    def test_network_family(self):
+        self.assertEqual(cls("550 5.4.6 routing loop detected")["reason"], "mail_loop")
+        self.assertEqual(cls("550 5.4.4 unable to route")["reason"], "host_unknown")
+        for code in ("4.4.0", "4.4.2", "4.4.5"):
+            with self.subTest(code=code):
+                self.assertEqual(cls(f"450 {code} network trouble")["category"],
+                                 bc.TRANSIENT)
+
+    def test_protocol_family(self):
+        self.assertEqual(cls("550 5.5.3 too many recipients")["reason"],
+                         "protocol_error")
+        for code in ("5.5.0", "5.5.1", "5.5.2", "5.5.4"):
+            with self.subTest(code=code):
+                self.assertEqual(cls(f"550 {code} protocol trouble")["reason"],
+                                 "protocol_error")
+
+    def test_media_family(self):
+        for code in ("5.6.0", "5.6.1", "5.6.3", "5.6.5"):
+            with self.subTest(code=code):
+                r = cls(f"550 {code} conversion problem")
+                self.assertEqual((r["reason"], r["category"]),
+                                 ("media_error", bc.CONTENT))
+
+    def test_security_family(self):
+        self.assertEqual(cls("550 5.7.0 security policy")["reason"], "policy_violation")
+        self.assertEqual(cls("550 5.7.2 list expansion prohibited")["reason"],
+                         "list_expansion")
+        for code in ("5.7.4", "5.7.5", "5.7.6", "5.7.7"):
+            with self.subTest(code=code):
+                self.assertEqual(cls(f"550 {code} crypto failure")["reason"],
+                                 "crypto_error")
+
+
+class TestProviderCodes(unittest.TestCase):
+    """Yahoo, AOL and Verizon put short codes in brackets that carry more than
+    the 4xx/5xx class does."""
+
+    def test_yahoo_policy_refusal(self):
+        r = cls("554 5.7.9 Message not accepted for policy reasons")
+        self.assertEqual((r["reason"], r["category"]),
+                         ("policy_violation", bc.REPUTATION))
+
+    def test_yahoo_throttle_is_temporary_not_a_domain_pause(self):
+        """A TSS deferral means slow down. Pausing the domain over a 4xx would
+        cost sending capacity for a problem that clears on its own."""
+        r = cls("421 4.7.0 [TSS04] Messages temporarily deferred due to "
+                "unexpected volume")
+        self.assertEqual(r["reason"], "throttled")
+        self.assertEqual(r["action"], bc.RETRY)
+        self.assertNotEqual(r["action"], bc.PAUSE)
+
+    def test_yahoo_ts_codes(self):
+        for code in ("TS01", "TS03", "TSS01", "TSS04"):
+            with self.subTest(code=code):
+                self.assertEqual(cls(f"421 4.7.0 {code} deferred")["reason"],
+                                 "throttled")
+
+    def test_verizon_policy_code(self):
+        self.assertEqual(cls("554 PH01 message rejected")["reason"], "blocked")
+
+    def test_yahoo_blocklist_code(self):
+        self.assertEqual(cls("553 5.7.1 DNSBL:ATTRBL 521 listed")["reason"],
+                         "blocklisted")
+
+
 class TestPathHandling(unittest.TestCase):
     """A path that does not exist is a typo. Classifying it as bounce text
     hides the mistake and sends you looking in the wrong place."""
