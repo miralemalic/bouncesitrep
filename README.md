@@ -147,15 +147,23 @@ you whether Google is the problem or a filter in front of it is.
 
 ## The diagnosis
 
-`--report` writes a markdown file that opens with a banner and a verdict, not
-a table:
+`--report` writes a markdown file that opens with the rate, then a verdict,
+before it shows you a single table:
 
+> **7,233 of 255,979 leads bounced (2.8%)** - 2026-06-23 to 2026-09-07
+>
+> A 2.8% bounce rate is survivable but worth pulling down. Under 2% is where
+> you want to be.
+>
 > **Your sending is the problem, not your list.** 64% of these bounces are
 > receivers refusing your domains, your authentication or your copy. Only 29%
 > are bad addresses.
 >
 > Cleaning the list will not fix this. Cutting volume, fixing authentication
 > and getting delisted will.
+
+The rate comes first because it decides whether the rest is urgent. "1,615
+blocklisted" tells you nothing on its own.
 
 Then who is rejecting you, a breakdown by recipient mail host, every blocklist
 naming you with the URL to check it, your worst sending domains ranked by how
