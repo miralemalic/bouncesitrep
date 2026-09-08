@@ -834,6 +834,16 @@ def run_one(text, as_json):
     return 0
 
 
+def _out_path(name, outdir):
+    """A bare filename goes to the output directory; a path is left alone.
+
+    So -o ~/Desktop --suppress-list dead.txt writes to the Desktop, but an
+    explicit --suppress-list /tmp/dead.txt still goes to /tmp.
+    """
+    p = os.path.expanduser(name)
+    return p if os.path.dirname(p) else os.path.join(outdir, p)
+
+
 def run_csv(path, args):
     csv.field_size_limit(2 ** 31 - 1)
     outdir = os.path.expanduser(args.outdir) if args.outdir \
@@ -906,7 +916,11 @@ def run_csv(path, args):
             host = (row.get(host_col) or "") if host_col else ""
             r = classify(text, recipient_host=host)
             row.update({f: r[_KEY[f]] for f in FIELDS})
-            writer.writerow(row)
+            # A whole-campaign export is mostly leads that never bounced.
+            # Copying them into the output leaves you scrolling past 97%
+            # blank rows to find the ones you can act on.
+            if r["reason"] != "empty" or args.all_rows:
+                writer.writerow(row)
 
             stats["rows"] += 1
             # A row with no bounce text is not a bounce. Counting it as
@@ -949,7 +963,9 @@ def run_csv(path, args):
                     suppress.append(addr)
 
     total = max(stats["total"], 1)
-    say(f"  {stats['rows']:,} rows -> {os.path.basename(out_path)}")
+    kept = stats["rows"] if args.all_rows else stats["total"]
+    say(f"  {stats['rows']:,} rows read -> {kept:,} written to "
+        f"{os.path.basename(out_path)}")
     if stats["empty"]:
         rate = stats["total"] / max(stats["rows"], 1) * 100
         say(f"    {stats['total']:,} of {stats['rows']:,} leads bounced "
@@ -958,6 +974,11 @@ def run_csv(path, args):
     for c, v in stats["category"].most_common():
         if v:
             say(f"      {c:15} {v:>8,}  ({v/total*100:5.1f}%)")
+
+    if args.suppress_list:
+        args.suppress_list = _out_path(args.suppress_list, outdir)
+    if args.dump_unknown:
+        args.dump_unknown = _out_path(args.dump_unknown, outdir)
 
     if args.suppress_list and suppress:
         seen, uniq = set(), []
@@ -980,8 +1001,8 @@ def run_csv(path, args):
         say(f"    {len(unknowns):,} unreadable -> {args.dump_unknown}")
 
     if args.report:
-        rp = args.report if isinstance(args.report, str) else \
-            os.path.join(outdir, f"{base} - diagnosis.md")
+        rp = _out_path(args.report, outdir) if isinstance(args.report, str) \
+            else os.path.join(outdir, f"{base} - diagnosis.md")
         with open(rp, "w", encoding="utf-8") as fh:
             fh.write(build_report(stats, os.path.basename(path)) + "\n")
         say(f"    diagnosis -> {os.path.basename(rp)}")
@@ -1002,6 +1023,8 @@ def main():
     ap.add_argument("--dump-unknown", metavar="FILE",
                     help="write every message it could not read")
     ap.add_argument("--json", action="store_true", help="JSON output for one message")
+    ap.add_argument("--all-rows", action="store_true",
+                    help="keep every row in the output, not just the bounces")
     ap.add_argument("--force", action="store_true", help="overwrite existing output")
     ap.add_argument("-q", "--quiet", action="store_true", help="report only errors")
     ap.add_argument("--version", action="version", version=f"bouncesitrep {__version__}")

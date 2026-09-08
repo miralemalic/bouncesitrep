@@ -436,7 +436,8 @@ class TestColumnDetection(unittest.TestCase):
 
 def _args(**kw):
     d = dict(column=None, host_column=None, outdir=None, report=None,
-             suppress_list=None, dump_unknown=None, force=False, quiet=True)
+             suppress_list=None, dump_unknown=None, force=False, quiet=True,
+             all_rows=False)
     d.update(kw)
     return argparse.Namespace(**d)
 
@@ -621,6 +622,40 @@ class TestEmptyRows(unittest.TestCase):
         self.assertIn("20 bounces analysed", text)
         self.assertNotIn("leads bounced", text)
 
+    def test_output_holds_only_the_bounces(self):
+        """The point of the output CSV is the rows you can act on. Carrying
+        the 97% that never bounced makes you scroll past them."""
+        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(90)]
+        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
+                 for i in range(10)]
+        p = self.write_csv(rows)
+        bc.run_csv(p, _args(outdir=self.tmp))
+        with io.open(os.path.join(self.tmp, "in - classified.csv"),
+                     newline="", encoding="utf-8") as fh:
+            out = list(csv.DictReader(fh))
+        self.assertEqual(len(out), 10)
+        self.assertTrue(all(r["bounce_reason"] != "empty" for r in out))
+
+    def test_all_rows_keeps_everything(self):
+        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(90)]
+        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
+                 for i in range(10)]
+        p = self.write_csv(rows)
+        bc.run_csv(p, _args(outdir=self.tmp, all_rows=True))
+        with io.open(os.path.join(self.tmp, "in - classified.csv"),
+                     newline="", encoding="utf-8") as fh:
+            self.assertEqual(len(list(csv.DictReader(fh))), 100)
+
+    def test_the_rate_still_counts_every_lead(self):
+        """Dropping blank rows from the output must not change the denominator."""
+        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(950)]
+        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
+                 for i in range(50)]
+        p = self.write_csv(rows)
+        rp = os.path.join(self.tmp, "d.md")
+        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
+        self.assertIn("50 of 1,000 leads bounced", read(rp))
+
     def test_a_file_of_only_blanks_does_not_crash(self):
         p = self.write_csv([["a@example.com", "", "", ""] for _ in range(5)])
         self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp)), 0)
@@ -715,6 +750,45 @@ class TestProviderCodes(unittest.TestCase):
     def test_yahoo_blocklist_code(self):
         self.assertEqual(cls("553 5.7.1 DNSBL:ATTRBL 521 listed")["reason"],
                          "blocklisted")
+
+
+class TestOutputLocation(unittest.TestCase):
+    """-o should govern all of it. A bare filename lands there; a full path
+    is still honoured."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
+        self.out = os.path.join(self.tmp, "results")
+        os.makedirs(self.out)
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def write_csv(self):
+        p = os.path.join(self.tmp, "in.csv")
+        with io.open(p, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh, lineterminator="\n")
+            w.writerow(["email", "mx", "last_sent_at", "bounce_msg"])
+            w.writerow(["a@example.com", "", "2026-09-01", "550 5.1.1 user unknown"])
+            w.writerow(["b@example.com", "", "2026-09-01", "qqq unreadable zzz"])
+        return p
+
+    def test_bare_filenames_land_in_the_output_directory(self):
+        p = self.write_csv()
+        bc.run_csv(p, _args(outdir=self.out, report="diag.md",
+                            suppress_list="dead.txt", dump_unknown="miss.txt"))
+        for name in ("in - classified.csv", "diag.md", "dead.txt", "miss.txt"):
+            with self.subTest(name=name):
+                self.assertTrue(os.path.isfile(os.path.join(self.out, name)), name)
+
+    def test_an_explicit_path_is_honoured(self):
+        p = self.write_csv()
+        elsewhere = os.path.join(self.tmp, "elsewhere.txt")
+        bc.run_csv(p, _args(outdir=self.out, suppress_list=elsewhere))
+        self.assertTrue(os.path.isfile(elsewhere))
+        self.assertFalse(os.path.isfile(os.path.join(self.out, "elsewhere.txt")))
+
+    def test_out_path_helper(self):
+        self.assertEqual(bc._out_path("x.txt", "/tmp/out"), "/tmp/out/x.txt")
+        self.assertEqual(bc._out_path("/abs/x.txt", "/tmp/out"), "/abs/x.txt")
 
 
 class TestPathHandling(unittest.TestCase):

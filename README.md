@@ -79,8 +79,21 @@ bouncesitrep export.csv                          # finds the columns itself
 bouncesitrep export.csv --report                 # write a markdown diagnosis
 bouncesitrep export.csv --suppress-list dead.txt # addresses never to mail again
 bouncesitrep export.csv --dump-unknown miss.txt  # what it could not read
+bouncesitrep export.csv --all-rows               # keep the non-bounces too
 bouncesitrep "550 5.1.1 user unknown"            # one message
 ```
+
+`-o` decides where everything lands. A bare filename goes there with the rest;
+a full path is left where you put it:
+
+```bash
+bouncesitrep export.csv -o ~/Desktop/results --report \
+  --suppress-list dead.txt --dump-unknown miss.txt
+```
+
+The output CSV holds **only the rows that bounced**. On a whole-campaign
+export that is the difference between 300 rows you can act on and 10,000 you
+have to scroll through. `--all-rows` keeps everything if you want it.
 
 It reads exports from PlusVibe, Instantly, Smartlead or anything else that can
 write a CSV. You do not pass `--column`: it scores every column on what the
@@ -240,7 +253,7 @@ If it scores worse on your corpus, that is a real result and I want the sample.
 python3 -m unittest discover -s tests -v
 ```
 
-95 tests, standard library only. Three of them are structural rather than
+101 tests, standard library only. Three of them are structural rather than
 example-based: no sending-side fault may suppress an address, no transient
 fault may suppress, and no data fault may pause a domain. Those are the
 mistakes that cost real money, so they run against every entry in the table
