@@ -787,8 +787,12 @@ class TestOutputLocation(unittest.TestCase):
         self.assertFalse(os.path.isfile(os.path.join(self.out, "elsewhere.txt")))
 
     def test_out_path_helper(self):
-        self.assertEqual(bc._out_path("x.txt", "/tmp/out"), "/tmp/out/x.txt")
-        self.assertEqual(bc._out_path("/abs/x.txt", "/tmp/out"), "/abs/x.txt")
+        # build the expected value the same way the OS does, or this passes on
+        # POSIX and fails on Windows over a separator
+        base = os.path.join(self.tmp, "out")
+        self.assertEqual(bc._out_path("x.txt", base), os.path.join(base, "x.txt"))
+        absolute = os.path.join(self.tmp, "elsewhere", "x.txt")
+        self.assertEqual(bc._out_path(absolute, base), absolute)
 
 
 class TestPathHandling(unittest.TestCase):
