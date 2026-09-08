@@ -554,7 +554,10 @@ def detect_columns(fieldnames, rows):
     lower = {f: f.strip().lower() for f in fieldnames}
 
     best, best_score = None, 0.0
+    named = None
     for f in fieldnames:
+        if lower[f] in _BOUNCE_NAMES and named is None:
+            named = f
         vals = [(r.get(f) or "").strip() for r in rows]
         vals = [v for v in vals if v]
         if not vals:
@@ -568,6 +571,11 @@ def detect_columns(fieldnames, rows):
             best, best_score = f, score
     if best_score >= 0.35:
         found["bounce"] = best
+    elif named:
+        # Scoring found nothing, but a column is named like bounce text. On a
+        # full lead export most rows never bounced, so a sample of the first
+        # few hundred can be entirely blank while the column is still right.
+        found["bounce"] = named
 
     for f in fieldnames:
         vals = [(r.get(f) or "").strip() for r in rows if (r.get(f) or "").strip()]
@@ -850,7 +858,7 @@ def run_csv(path, args):
         + (f", dates from '{date_col}'" if date_col else ""))
 
     stats = {
-        "total": 0, "unknown": 0,
+        "total": 0, "unknown": 0, "empty": 0, "rows": 0,
         "category": collections.Counter(), "action": collections.Counter(),
         "reason": collections.Counter(), "rejected_by": collections.Counter(),
         "blocklist": collections.Counter(), "confidence": collections.Counter(),
@@ -884,6 +892,13 @@ def run_csv(path, args):
             row.update({f: r[_KEY[f]] for f in FIELDS})
             writer.writerow(row)
 
+            stats["rows"] += 1
+            # A row with no bounce text is not a bounce. Counting it as
+            # "unknown" makes a healthy run look like a 97% failure, which is
+            # exactly what a full lead export looks like next to a bounce one.
+            if r["reason"] == "empty":
+                stats["empty"] += 1
+                continue
             stats["total"] += 1
             stats["category"][r["category"]] += 1
             stats["action"][r["action"]] += 1
@@ -918,10 +933,18 @@ def run_csv(path, args):
                     suppress.append(addr)
 
     total = max(stats["total"], 1)
-    say(f"  {stats['total']:,} rows -> {os.path.basename(out_path)}")
+    say(f"  {stats['rows']:,} rows -> {os.path.basename(out_path)}")
+    if stats["empty"]:
+        share = stats["empty"] / max(stats["rows"], 1) * 100
+        say(f"    {stats['empty']:,} rows ({share:.0f}%) had no bounce text and "
+            f"were skipped")
+        if share > 50:
+            say("    that usually means the export is all your leads rather "
+                "than just the bounced ones")
+    say(f"    {stats['total']:,} bounces classified:")
     for c, v in stats["category"].most_common():
         if v:
-            say(f"    {c:15} {v:>8,}  ({v/total*100:5.1f}%)")
+            say(f"      {c:15} {v:>8,}  ({v/total*100:5.1f}%)")
 
     if args.suppress_list and suppress:
         seen, uniq = set(), []

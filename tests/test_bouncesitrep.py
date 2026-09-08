@@ -419,6 +419,14 @@ class TestColumnDetection(unittest.TestCase):
         self.assertEqual(found["email"], "email")
         self.assertEqual(found["date"], "last_sent_at")
 
+    def test_well_named_column_survives_an_all_blank_sample(self):
+        """On a full lead export most rows never bounced. If the sampled rows
+        happen to contain no bounces at all, the column is still the right
+        one -- failing there would reject a perfectly good export."""
+        rows = [{"email": "a@example.com", "bounce_msg": ""}] * 200
+        found = bc.detect_columns(list(rows[0]), rows)
+        self.assertEqual(found["bounce"], "bounce_msg")
+
     def test_no_bounce_column_is_reported_not_guessed(self):
         rows = [{"name": "Ada", "city": "London"}] * 3
         self.assertIsNone(bc.detect_columns(list(rows[0]), rows)["bounce"])
@@ -538,6 +546,50 @@ class TestCsv(unittest.TestCase):
         p = self.write_csv([["a@example.com", "", "", "550 5.1.1\nuser unknown"]])
         bc.run_csv(p, _args(outdir=self.tmp))
         self.assertEqual(len(self.out_rows()), 1)
+
+
+class TestEmptyRows(unittest.TestCase):
+    """A lead export contains every lead, and most never bounced. Those rows
+    have no bounce text and are not failures to classify -- counting them as
+    unknown made a healthy run read as a 97% failure."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def write_csv(self, rows):
+        p = os.path.join(self.tmp, "in.csv")
+        with io.open(p, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh, lineterminator="\n")
+            w.writerow(["email", "mx", "last_sent_at", "bounce_msg"])
+            w.writerows(rows)
+        return p
+
+    def test_empty_rows_are_not_counted_as_unknown(self):
+        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(90)]
+        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
+                 for i in range(10)]
+        p = self.write_csv(rows)
+        rp = os.path.join(self.tmp, "d.md")
+        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
+        text = read(rp)
+        # the report must describe the 10 real bounces, not 100 rows
+        self.assertIn("10 bounces", text)
+        self.assertNotIn("100 bounces", text)
+
+    def test_percentages_use_the_bounces_not_the_row_count(self):
+        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(90)]
+        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
+                 for i in range(10)]
+        p = self.write_csv(rows)
+        rp = os.path.join(self.tmp, "d.md")
+        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
+        # 10/10 of the actual bounces are data faults, so it must read 100%
+        self.assertIn("100.0%", read(rp))
+
+    def test_a_file_of_only_blanks_does_not_crash(self):
+        p = self.write_csv([["a@example.com", "", "", ""] for _ in range(5)])
+        self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp)), 0)
 
 
 class TestRfc3463Families(unittest.TestCase):
