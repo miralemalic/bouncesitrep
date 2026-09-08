@@ -573,8 +573,9 @@ class TestEmptyRows(unittest.TestCase):
         rp = os.path.join(self.tmp, "d.md")
         bc.run_csv(p, _args(outdir=self.tmp, report=rp))
         text = read(rp)
-        # the report must describe the 10 real bounces, not 100 rows
-        self.assertIn("10 bounces", text)
+        # the report counts the 10 real bounces against the 100 leads, and
+        # never reports 100 bounces
+        self.assertIn("10 of 100 leads bounced", text)
         self.assertNotIn("100 bounces", text)
 
     def test_percentages_use_the_bounces_not_the_row_count(self):
@@ -586,6 +587,39 @@ class TestEmptyRows(unittest.TestCase):
         bc.run_csv(p, _args(outdir=self.tmp, report=rp))
         # 10/10 of the actual bounces are data faults, so it must read 100%
         self.assertIn("100.0%", read(rp))
+
+    def test_a_whole_campaign_export_yields_a_bounce_rate(self):
+        """Exporting the whole campaign is the normal way to use this. The
+        rows that never bounced are the denominator, not noise."""
+        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(950)]
+        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
+                 for i in range(50)]
+        p = self.write_csv(rows)
+        rp = os.path.join(self.tmp, "d.md")
+        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
+        text = read(rp)
+        self.assertIn("50 of 1,000 leads bounced (5.0%)", text)
+        self.assertIn("high enough to be doing damage", text)
+
+    def test_a_healthy_rate_is_called_healthy(self):
+        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(995)]
+        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
+                 for i in range(5)]
+        p = self.write_csv(rows)
+        rp = os.path.join(self.tmp, "d.md")
+        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
+        self.assertIn("healthy", read(rp))
+
+    def test_a_bounces_only_export_still_works(self):
+        """No blank rows means no denominator, so it must not claim a rate."""
+        rows = [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
+                for i in range(20)]
+        p = self.write_csv(rows)
+        rp = os.path.join(self.tmp, "d.md")
+        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
+        text = read(rp)
+        self.assertIn("20 bounces analysed", text)
+        self.assertNotIn("leads bounced", text)
 
     def test_a_file_of_only_blanks_does_not_crash(self):
         p = self.write_csv([["a@example.com", "", "", ""] for _ in range(5)])

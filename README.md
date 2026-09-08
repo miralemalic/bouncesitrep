@@ -86,6 +86,11 @@ It reads exports from PlusVibe, Instantly, Smartlead or anything else that can
 write a CSV. You do not pass `--column`: it scores every column on what the
 values look like, not on the name, and reports which one it picked.
 
+**Feed it the whole campaign export, not a bounces-only one.** Most leads in
+that file never bounced, and those rows are the denominator - they are what
+turns "1,615 blocklisted" into "a 3.0% bounce rate, half of it your own
+sending". A bounces-only export still works, it just cannot tell you the rate.
+
 ### One message
 
 ```
@@ -235,7 +240,7 @@ If it scores worse on your corpus, that is a real result and I want the sample.
 python3 -m unittest discover -s tests -v
 ```
 
-88 tests, standard library only. Three of them are structural rather than
+95 tests, standard library only. Three of them are structural rather than
 example-based: no sending-side fault may suppress an address, no transient
 fault may suppress, and no data fault may pause a domain. Those are the
 mistakes that cost real money, so they run against every entry in the table

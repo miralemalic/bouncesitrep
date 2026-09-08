@@ -640,8 +640,24 @@ def build_report(stats, source_name):
     w("")
     w(f"# Bounce diagnosis: {source_name}")
     w("")
-    w(f"{total:,} bounces analysed{period}")
-    w("")
+    if stats.get("empty"):
+        rows = stats.get("rows", total)
+        rate = total / max(rows, 1) * 100
+        w(f"**{total:,} of {rows:,} leads bounced ({rate:.1f}%)**{period}")
+        w("")
+        if rate >= 5:
+            w(f"A {rate:.1f}% bounce rate is high enough to be doing damage on "
+              f"its own. Mailbox providers read it as a signal about you, so it "
+              f"compounds: the more you bounce, the more you get filtered.")
+        elif rate >= 2:
+            w(f"A {rate:.1f}% bounce rate is survivable but worth pulling down. "
+              f"Under 2% is where you want to be.")
+        else:
+            w(f"A {rate:.1f}% bounce rate is healthy.")
+        w("")
+    else:
+        w(f"{total:,} bounces analysed{period}")
+        w("")
 
     # --- verdict ---------------------------------------------------------
     yours = cat[REPUTATION] + cat[AUTH] + cat[CONTENT]
@@ -935,12 +951,9 @@ def run_csv(path, args):
     total = max(stats["total"], 1)
     say(f"  {stats['rows']:,} rows -> {os.path.basename(out_path)}")
     if stats["empty"]:
-        share = stats["empty"] / max(stats["rows"], 1) * 100
-        say(f"    {stats['empty']:,} rows ({share:.0f}%) had no bounce text and "
-            f"were skipped")
-        if share > 50:
-            say("    that usually means the export is all your leads rather "
-                "than just the bounced ones")
+        rate = stats["total"] / max(stats["rows"], 1) * 100
+        say(f"    {stats['total']:,} of {stats['rows']:,} leads bounced "
+            f"({rate:.1f}%)")
     say(f"    {stats['total']:,} bounces classified:")
     for c, v in stats["category"].most_common():
         if v:
