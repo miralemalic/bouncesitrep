@@ -4,13 +4,11 @@
     python3 tools/coverage.py bounces.csv --column bounce_msg
     python3 tools/coverage.py bounces.jsonl --field msg
 
-Prints coverage, the fault and action split, and the reasons found. Use
---unknown to print the messages it could not read, which is how new patterns
-get written.
+Prints coverage, the category and action split, and every reason found.
+--unknown prints what it could not read, which is how new patterns get written.
 
-The README's coverage figure comes from this script. Run it on your own
-bounces and you will get your own number -- the claim is meant to be checked,
-not taken on trust.
+The README's coverage figure comes from this script. Run it on your own bounces
+and you get your own number. The claim is meant to be checked.
 """
 
 import argparse
@@ -66,7 +64,7 @@ def main():
         else read_csv(path, args.column)
 
     reason = collections.Counter()
-    fault = collections.Counter()
+    category = collections.Counter()
     action = collections.Counter()
     conf = collections.Counter()
     tier = collections.Counter()
@@ -80,7 +78,7 @@ def main():
         total += 1
         r = bc.classify(text)
         reason[r["reason"]] += 1
-        fault[r["category"]] += 1
+        category[r["category"]] += 1
         action[r["action"]] += 1
         conf[r["confidence"]] += 1
         tier[r["_tier"]] += 1
@@ -102,7 +100,7 @@ def main():
             print(f"    {v:>8,}  {v/total*100:5.1f}%  {bar(v/total)}  {k}")
         print()
 
-    block("category", fault, "     who has to act")
+    block("category", category, "     who has to act")
     block("action", action, "       what to do")
     block("reason", reason)
     block("confidence", conf, "   how sure the match is")

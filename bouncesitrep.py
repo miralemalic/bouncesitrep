@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Read bounce text from any sequencer export and say what is actually wrong.
+"""Read a bounce export. Report whose problem it is.
 
-  bouncesitrep export.csv                  # finds the bounce column itself
-  bouncesitrep export.csv --report         # writes a markdown diagnosis
+  bouncesitrep export.csv                  finds the bounce column itself
+  bouncesitrep export.csv --report         writes a markdown diagnosis
   bouncesitrep export.csv --suppress-list dead.txt
-  bouncesitrep "550 5.1.1 user unknown"    # one message
+  bouncesitrep "550 5.1.1 user unknown"    one message
 
-Every bounce tool sorts mail into hard and soft. That tells you nothing at 9am
-with four thousand overnight bounces in front of you. The question worth
-answering is who has to fix it: your list, your domains, your DNS, or your copy.
+Bounce tools sort mail into hard and soft. That is no use at 9am with four
+thousand overnight bounces in front of you. The question is whose problem it
+is: your list, your domains, your DNS, or your copy.
 
-Input is bounce reason text as sequencers expose it. For parsing whole RFC5322
-bounce emails, use sisimai (https://libsisimai.org).
+Takes bounce text as sequencers expose it. For whole RFC5322 bounce mail, use
+sisimai (https://libsisimai.org).
 
-Standard library only. Inputs are read-only.
+Standard library only. Inputs are never modified.
 """
 
 import argparse
@@ -23,17 +23,16 @@ import os
 import re
 import sys
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 QUIET = False
 
 
 # ---------------------------------------------------------------- the console
 #
-# Colour only when a person is looking. Piping to a file, redirecting into
-# another program or setting NO_COLOR all turn it off, so the output stays
-# greppable. Windows 10 speaks ANSI once you ask it to; older consoles do not,
-# and they get plain text rather than a screen full of escape codes.
+# Colour only when a person is looking. Piped output stays plain so it can be
+# grepped. Windows 10 speaks ANSI once asked; older consoles do not, and get
+# plain text instead of a screen of escape codes.
 
 def _colour_ok():
     if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
@@ -62,17 +61,17 @@ _C = {"dim": "\033[2m", "bold": "\033[1m", "off": "\033[0m",
 
 
 def paint(text, *names):
-    """Wrap text in colour, or hand it straight back when colour is off."""
+    """Colour the text, or hand it back untouched when colour is off."""
     if not COLOUR:
         return text
     return "".join(_C[n] for n in names) + text + _C["off"]
 
 
 def _unicode_ok():
-    """Whether this console can print the block-drawing banner.
+    """Can this console print the block banner?
 
-    A Windows console still on a legacy code page raises UnicodeEncodeError on
-    these characters, which would crash the program over decoration.
+    A legacy Windows code page raises UnicodeEncodeError on these characters.
+    Crashing over decoration is not acceptable.
     """
     enc = getattr(sys.stdout, "encoding", None) or ""
     try:
@@ -92,9 +91,9 @@ def say(*a, **k):
 
 # ------------------------------------------------------------- what we output
 
-# Category answers "whose problem is it", chosen so each one lands on a
-# different desk. Splitting reputation from authentication matters because one
-# takes weeks of warming and the other is a DNS record you fix before lunch.
+# Category answers "whose problem is it". Each one lands on a different desk.
+# Reputation and authentication are split because one is weeks of warming and
+# the other is a DNS record you fix before lunch.
 DATA = "data"                    # the address is dead or wrong
 REPUTATION = "reputation"        # your sending identity is being refused
 AUTH = "authentication"          # SPF/DKIM/DMARC/PTR is broken
@@ -112,8 +111,8 @@ REWRITE = "rewrite_copy"         # the words are the problem
 REVIEW = "review"                # classified, but look at it yourself
 
 # reason -> (plain English, category, action)
-# The plain English column is what makes an export readable by someone who
-# does not know what 5.7.133 means, which is most people who will open it.
+# The plain English column is what lets someone read the export without
+# knowing what 5.7.133 means. That is most people who will open it.
 REASONS = {
     "user_unknown": (
         "The address does not exist", DATA, SUPPRESS),
@@ -208,8 +207,8 @@ REASONS = {
         "No bounce text present", UNKNOWN, REVIEW),
 }
 
-# Precedence. Lower wins. Machine tokens beat prose because a program emitted
-# them; an admin typed the prose, sometimes years ago, sometimes wrongly.
+# Precedence. Lower wins. Machine tokens beat prose: a program emitted the
+# token, an admin typed the prose, sometimes years ago and sometimes wrong.
 T_TOKEN = 1      # RESOLVER.ADR..., STOREDRV..., vendor gateway codes
 T_BLOCKLIST = 2  # a named blocklist settles it
 T_ESC = 3        # specific enhanced status codes
@@ -264,9 +263,8 @@ RULES = [
     R(T_TOKEN, r'\bXGEMAIL_\d+', "blocked", "Sophos gateway rejected the message"),
     R(T_TOKEN, r'\bOXSUS\d+_\d+', "blocked", "Open-Xchange gateway rejected the sender"),
     R(T_TOKEN, r'\bS\d{9,}\b', "blocked", "Barracuda-style gateway rejection code"),
-    # Yahoo and AOL bracket a short code into the text. TS/TSS are throttles
-    # and read as temporary; the dashboards that only show 4xx-vs-5xx lose
-    # that distinction entirely.
+    # Yahoo and AOL bracket a short code into the text. TS/TSS are throttles,
+    # not refusals. A dashboard showing only 4xx-vs-5xx loses that.
     R(T_TOKEN, r'\[TSS?\d{2}\]|\bTSS0[1-4]\b|\bTS0[1-4]\b', "throttled",
       "Yahoo/AOL deferral - too much volume or too many complaints"),
     R(T_TOKEN, r'\bPH0[1-9]\b|\bIPv6 connections are not accepted\b', "blocked",
@@ -444,10 +442,9 @@ _PROVIDERS = [
 
 
 def split_layers(text):
-    """Return (wrapper, remote).
+    """Split "relay summary -> remote reply" into its two halves.
 
-    Half of real bounce text is a relay's summary, an arrow, then the remote
-    server's own words:
+    Half of real bounce text arrives like this:
 
         5.1.351 Remote server returned unknown recipient or mailbox unavailable
           -> 550 Requested action not taken; Reject due to policy restrictions.
@@ -468,7 +465,7 @@ def find_provider(text):
 
 
 # Operators run many hostnames. uri.cal1.sophosxl.com and uri.vir1.sophosxl.com
-# are one listing to deal with, not two, so report the operator.
+# are one listing to clear, not two. Report the operator.
 _BL_OPERATOR = [
     (re.compile(r'spamhaus', re.I), "Spamhaus"),
     (re.compile(r'surbl', re.I), "SURBL"),
@@ -493,7 +490,7 @@ BL_URLS = {
 
 
 def find_blocklist(text):
-    """Named blocklists, as operator names rather than raw hostnames."""
+    """Named blocklists, reported as operators rather than hostnames."""
     seen, out = set(), []
     for m in _BLOCKLIST_RE.finditer(text):
         host = m.group(1).lower().strip(".")
@@ -507,7 +504,7 @@ def find_blocklist(text):
 
 
 def classify(text, recipient_host=""):
-    """Classify one bounce message. Returns a dict; never raises."""
+    """Classify one message. Returns a dict. Never raises."""
     text = (text or "").strip()
     esc = smtp = None
     provider = blocklist = ""
@@ -516,15 +513,15 @@ def classify(text, recipient_host=""):
         wrapper, remote = split_layers(text)
         provider = find_provider(text)
         blocklist = find_blocklist(text)
-        # Read codes from the remote half first; the wrapper's code is the
-        # relay describing itself, not the rejection.
+        # Read codes from the remote half first. The wrapper's code describes
+        # the relay, not the rejection.
         esc = _ESC_RE.search(remote) or _ESC_RE.search(wrapper) or _ESC_RE.search(text)
         smtp = _SMTP_RE.search(remote) or _SMTP_RE.search(text)
 
         hit = None
-        # Two orderings at once. Across tiers the better kind of signal wins
-        # wherever it sits. Within a tier the remote half wins, because it is
-        # the server that actually refused the mail.
+        # Two orderings at once. Across tiers, the better kind of signal wins
+        # wherever it sits. Within a tier, the remote half wins: that is the
+        # server that actually refused the mail.
         for _tier, rules in RULES_BY_TIER:
             for candidate in (remote, text):
                 if not candidate:
@@ -543,8 +540,8 @@ def classify(text, recipient_host=""):
     reason = hit.reason if hit else ("empty" if not text else "unknown")
     detail = hit.detail if hit else ""
 
-    # A full mailbox that the receiver also calls inactive is not a mailbox
-    # that will drain. It is an account nobody opens any more.
+    # A full mailbox the receiver also calls inactive will not drain. Nobody
+    # opens that account any more.
     if reason == "mailbox_full" and text:
         permanent = bool(re.search(r'\b5\.2\.2\b', text)) or (
             smtp and smtp.group(1).startswith("5"))
@@ -601,11 +598,10 @@ _ISO_DATE = re.compile(r'^\d{4}-\d{2}-\d{2}')
 
 
 def detect_columns(fieldnames, rows):
-    """Work out which columns hold the bounce text, the host and the date.
+    """Find the bounce text, host and date columns.
 
-    Names alone are unreliable -- every sequencer invents its own schema -- so
-    the bounce column is chosen by scoring what the values actually look like,
-    with the name only breaking ties.
+    Every sequencer invents its own schema, so score the values rather than
+    trust the headings. Names only break ties.
     """
     found = {"bounce": None, "host": None, "email": None, "date": None}
     lower = {f: f.strip().lower() for f in fieldnames}
@@ -629,9 +625,9 @@ def detect_columns(fieldnames, rows):
     if best_score >= 0.35:
         found["bounce"] = best
     elif named:
-        # Scoring found nothing, but a column is named like bounce text. On a
-        # full lead export most rows never bounced, so a sample of the first
-        # few hundred can be entirely blank while the column is still right.
+        # Scoring found nothing, but a column is named like bounce text. Most
+        # rows in a lead export never bounced, so the first few hundred can be
+        # blank while the column is still the right one.
         found["bounce"] = named
 
     for f in fieldnames:
@@ -695,11 +691,11 @@ BANNER_ASCII = """                      |
 
 
 def banner(version):
-    """The mark, in whichever character set this console can actually print."""
+    """The mark, in a character set this console can print."""
     return (BANNER if UNICODE else BANNER_ASCII).format(version=version)
 
 
-# How much trouble each category means, which is also how it gets coloured.
+# How much trouble each category means, and therefore its colour.
 CAT_COLOUR = {REPUTATION: "red", AUTH: "yellow", CONTENT: "yellow",
               DATA: "cyan", RECIPIENT: "blue", TRANSIENT: "grey",
               UNKNOWN: "grey"}
@@ -710,11 +706,11 @@ def _bar(frac, width=22):
 
 
 def _verdict(stats, total):
-    """What is actually wrong, in words, sized to the situation.
+    """Name the problem, sized to the situation.
 
-    Nine of these rather than three, because "sending-side" covers a domain on
-    Spamhaus, an SPF record with a typo and copy that trips filters, and those
-    three need different mornings.
+    Nine of these, not three. "Sending-side" covers a domain on Spamhaus, a
+    typo in an SPF record, and copy that trips filters. Three different
+    mornings.
     """
     cat, reason = stats["category"], stats["reason"]
     yours = cat[REPUTATION] + cat[AUTH] + cat[CONTENT]
@@ -813,7 +809,7 @@ def _verdict(stats, total):
 
 
 def _trend(stats):
-    """Whether it is getting better or worse, which a single total cannot say."""
+    """Rising or falling. A single total cannot say."""
     if len(stats["by_date"]) < 4:
         return []
     days = sorted(stats["by_date"])
@@ -845,11 +841,10 @@ def _trend(stats):
 
 
 def _next_steps(stats, cat):
-    """The ordered list of what to do, cheapest and most urgent first.
+    """What to do, most urgent first.
 
-    Delisting comes before everything because nothing else you change matters
-    while a listing stands. Authentication comes next because it is a DNS edit
-    rather than weeks of warming.
+    Delisting leads: nothing else you change matters while a listing stands.
+    Authentication is next, being a DNS edit rather than weeks of warming.
     """
     w = ["## Do this first", ""]
     n = 1
@@ -885,8 +880,8 @@ def _next_steps(stats, cat):
 
 
 def build_report(stats, source_name):
-    """A markdown diagnosis. Written to be read by a person who wants to know
-    what to do, not by someone auditing a classifier."""
+    """The markdown diagnosis. Written for someone who wants to act on it,
+    not audit the classifier."""
     total = stats["total"]
     cat = stats["category"]
     out = []
@@ -1015,13 +1010,12 @@ def run_one(text, as_json):
 
 
 def sniff_delimiter(path):
-    """Work out what separates the columns.
+    """Find the column separator.
 
-    A file called .csv is not always comma separated. Excel writes semicolons
-    in most of Europe, plenty of "CSV" exports are really tab separated, and a
-    .tsv always is. Reading a semicolon file as commas gives you one giant
-    column named "email;bounce_msg" and an output nobody can use, so guess
-    from the header rather than from the extension.
+    A .csv is not always comma separated. Excel writes semicolons across most
+    of Europe, plenty of exports are tab separated, and a .tsv always is. Read
+    a semicolon file as commas and you get one column named "email;bounce_msg"
+    and output nobody can use. Trust the header, not the extension.
     """
     if path.lower().endswith(".tsv"):
         return "\t"
@@ -1029,9 +1023,9 @@ def sniff_delimiter(path):
         head = fh.readline()
     if not head.strip():
         return ","
-    # The winner is whichever candidate splits the header into the most
-    # fields. A comma inside a quoted heading would fool a naive count, so
-    # let the csv module do the splitting.
+    # Winner is whichever candidate splits the header into the most fields.
+    # A comma inside a quoted heading fools a naive count, so let the csv
+    # module do the splitting.
     best, best_n = ",", 0
     for cand in (",", ";", "\t", "|"):
         try:
@@ -1044,17 +1038,17 @@ def sniff_delimiter(path):
 
 
 def _out_path(name, outdir):
-    """A bare filename goes to the output directory; a path is left alone.
+    """A bare filename goes to the output directory. A path is left alone.
 
-    So -o ~/Desktop --suppress-list dead.txt writes to the Desktop, but an
-    explicit --suppress-list /tmp/dead.txt still goes to /tmp.
+    -o ~/Desktop --suppress-list dead.txt lands on the Desktop.
+    --suppress-list /tmp/dead.txt still goes to /tmp.
     """
     p = os.path.expanduser(name)
     return p if os.path.dirname(p) else os.path.join(outdir, p)
 
 
 def _summarise(stats, args, out_path, total):
-    """Print the run summary. False means there was nothing to diagnose."""
+    """Print the run summary. False means nothing to diagnose."""
     kept = stats["rows"] if args.all_rows else stats["total"]
     arrow = "\u2192" if UNICODE else "->"
     say("")
@@ -1066,8 +1060,8 @@ def _summarise(stats, args, out_path, total):
         say("")
         return False
 
-    # The rate needs a denominator, so it only appears when the export carried
-    # the leads that did not bounce as well.
+    # The rate needs a denominator, so it only appears when the export also
+    # carried the leads that did not bounce.
     if stats["empty"]:
         rate = stats["total"] / max(stats["rows"], 1) * 100
         tint = "red" if rate >= 5 else ("yellow" if rate >= 2 else "green")
@@ -1090,7 +1084,7 @@ def _summarise(stats, args, out_path, total):
 
 
 def _write_extras(stats, args, outdir, base, path, suppress, unknowns, email_col):
-    """The optional side files: suppression list, unreadable dump, diagnosis."""
+    """Optional outputs: suppression list, unreadable dump, diagnosis."""
     if args.suppress_list:
         args.suppress_list = _out_path(args.suppress_list, outdir)
     if args.dump_unknown:
@@ -1202,15 +1196,14 @@ def run_csv(path, args):
             r = classify(text, recipient_host=host)
             row.update({f: r[_KEY[f]] for f in FIELDS})
             # A whole-campaign export is mostly leads that never bounced.
-            # Copying them into the output leaves you scrolling past 97%
-            # blank rows to find the ones you can act on.
+            # Copying them through means scrolling past 97% blank rows to
+            # reach the ones you can act on.
             if r["reason"] != "empty" or args.all_rows:
                 writer.writerow(row)
 
             stats["rows"] += 1
-            # A row with no bounce text is not a bounce. Counting it as
-            # "unknown" makes a healthy run look like a 97% failure, which is
-            # exactly what a full lead export looks like next to a bounce one.
+            # A row with no bounce text is not a bounce. Counted as "unknown"
+            # it makes a healthy run read as a 97% failure.
             if r["reason"] == "empty":
                 stats["empty"] += 1
                 continue
@@ -1280,10 +1273,9 @@ def main():
     QUIET = args.quiet
 
     path = os.path.expanduser(args.input)
-    # Anything ending .csv/.tsv was meant to be a file. No bounce message ever
-    # ends that way, so a missing one is a typo, not something to classify --
-    # silently treating the path as bounce text sends you looking in the wrong
-    # place entirely.
+    # Anything ending .csv/.tsv was meant to be a file. No bounce message ends
+    # that way, so a missing one is a typo. Classifying the path as bounce text
+    # would send you looking in entirely the wrong place.
     if path.lower().endswith((".csv", ".tsv")):
         if os.path.isdir(path):
             print(f"{args.input}: is a directory, not a file", file=sys.stderr)

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Tests for bouncesitrep:
+"""Tests for bouncesitrep.
 
     python3 -m unittest discover -s tests -v
 
-Fixtures are real bounce text with the addresses and sending domains replaced.
-No real address, domain or campaign name appears in this repo.
+Fixtures are real bounce text with the addresses and sending domains swapped
+out. No real address, domain or campaign name appears in this repo.
 """
 
 import argparse
@@ -644,7 +644,7 @@ class TestConsole(unittest.TestCase):
 
     def test_both_banners_fit_eighty_columns(self):
         for b in (bc.BANNER, bc.BANNER_ASCII):
-            widest = max(len(l) for l in b.format(version="2.0.0").split("\n"))
+            widest = max(len(l) for l in b.format(version=bc.__version__).split("\n"))
             self.assertLessEqual(widest, 80)
 
 

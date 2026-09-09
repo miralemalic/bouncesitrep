@@ -20,12 +20,11 @@
     ╔╗ ╔═╗╦ ╦╔╗╔╔═╗╔═╗  ╔═╗╦╔╦╗╦═╗╔═╗╔═╗
     ╠╩╗║ ║║ ║║║║║  ║╣   ╚═╗║ ║ ╠╦╝║╣ ╠═╝
     ╚═╝╚═╝╚═╝╝╚╝╚═╝╚═╝  ╚═╝╩ ╩ ╩╚═╚═╝╩
-                   v2.0.0
+                   v2.1.0
 ```
 
 A SITREP is a situation report: where you stand, where you are taking losses,
-what to do next. Point this at a bounce export from any sequencer and it writes
-you one.
+what to do next. Point this at a bounce export and it writes you one.
 
 ```
 $ bouncesitrep export.csv --report
@@ -51,12 +50,12 @@ One file. No dependencies. Python 3.9 or newer.
 
 ## Hard or soft is the wrong question
 
-Every bounce tool sorts mail into hard and soft. That tells you nothing at 9am
-with four thousand overnight bounces in front of you, because a dead address
-and a blocked domain are both "hard" and they need opposite responses. Delete
-the leads and you destroyed good data. Keep sending and you burn the domain.
+Every bounce tool sorts mail into hard and soft. At 9am with four thousand
+overnight bounces in front of you, that is no use: a dead address and a
+blocked domain are both "hard" and they need opposite responses. Delete the
+leads and you have destroyed good data. Keep sending and you burn the domain.
 
-The question worth answering is who has to fix it.
+The question is whose problem it is.
 
 | category | means | who fixes it |
 |---|---|---|
@@ -67,10 +66,9 @@ The question worth answering is who has to fix it.
 | `recipient` | their mailbox refuses everyone | suppress, nothing else to do |
 | `transient` | nobody's fault | retry |
 
-Six categories because they land on six different desks. Separating
-`authentication` from `reputation` matters most: one takes weeks of warming,
-the other is a DNS record you fix before lunch, and they look identical in a
-hard/soft report.
+Six categories, six different desks. Separating `authentication` from
+`reputation` matters most: one is weeks of warming, the other is a DNS record
+you fix before lunch, and a hard/soft report shows them as the same thing.
 
 ## Install
 
@@ -214,16 +212,16 @@ server said policy. The remote server is right.
 ## What it refuses to do
 
 **It will not pause a healthy domain on weak evidence.** `Recipient address
-rejected: Access denied` is 2% of my corpus and Exchange returns it both for a
-dead address and for a tenant block. Nothing in the text separates them, so it
-resolves to `review` and says so.
+rejected: Access denied` is 2% of my corpus, and Exchange returns it both for
+a dead address and for a tenant block. Nothing in the text separates the two,
+so it resolves to `review` and says so.
 
 **It will not suppress a lead over your own failure.** If your domain got
-blocked, the recipient is still a good lead. No reason may pair a
-sending-side category with `suppress`, and a test walks the whole table on
-every run to enforce it.
+blocked, the recipient is still a good lead. No reason may pair a sending-side
+category with `suppress`. A test walks the whole table on every run to enforce
+that.
 
-Text it cannot read comes back as `unknown` with the raw message kept, never a
+Text it cannot read comes back as `unknown`, raw message kept. It does not
 guess.
 
 ## Measured, not asserted
@@ -238,10 +236,10 @@ worst single slice          99.2%
 ```
 
 The worst slice is the number that matters, not the average. I wrote the first
-set of rules reading one slice of that corpus. It scored 99.2% there and
-**74.5%** on a slice it had never seen. That is what overfitting looks like,
-and the only reason I caught it was testing against data the rules were not
-written from. Every number above is the worst case after that.
+rules against one slice of that corpus. They scored 99.2% there and **74.5%**
+on a slice they had never seen. That is overfitting, and the only reason I
+caught it was testing against data the rules were not written from. Every
+number above is the worst case.
 
 Check it on your own bounces. The measuring stick ships with the tool:
 
