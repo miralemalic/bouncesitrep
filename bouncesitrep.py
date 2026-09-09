@@ -28,6 +28,63 @@ __version__ = "2.0.0"
 QUIET = False
 
 
+# ---------------------------------------------------------------- the console
+#
+# Colour only when a person is looking. Piping to a file, redirecting into
+# another program or setting NO_COLOR all turn it off, so the output stays
+# greppable. Windows 10 speaks ANSI once you ask it to; older consoles do not,
+# and they get plain text rather than a screen full of escape codes.
+
+def _colour_ok():
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return False
+    if not (hasattr(sys.stdout, "isatty") and sys.stdout.isatty()):
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            h = ctypes.windll.kernel32.GetStdHandle(-11)
+            mode = ctypes.c_uint32()
+            if not ctypes.windll.kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+                return False
+            # 0x0004 is ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            return bool(ctypes.windll.kernel32.SetConsoleMode(h, mode.value | 4))
+        except Exception:
+            return False
+    return True
+
+
+COLOUR = _colour_ok()
+
+_C = {"dim": "\033[2m", "bold": "\033[1m", "off": "\033[0m",
+      "cyan": "\033[36m", "red": "\033[31m", "yellow": "\033[33m",
+      "green": "\033[32m", "blue": "\033[34m", "grey": "\033[90m"}
+
+
+def paint(text, *names):
+    """Wrap text in colour, or hand it straight back when colour is off."""
+    if not COLOUR:
+        return text
+    return "".join(_C[n] for n in names) + text + _C["off"]
+
+
+def _unicode_ok():
+    """Whether this console can print the block-drawing banner.
+
+    A Windows console still on a legacy code page raises UnicodeEncodeError on
+    these characters, which would crash the program over decoration.
+    """
+    enc = getattr(sys.stdout, "encoding", None) or ""
+    try:
+        "\u2588\u2500\u2502\u256d".encode(enc)
+        return True
+    except (UnicodeEncodeError, LookupError, TypeError):
+        return False
+
+
+UNICODE = _unicode_ok()
+
+
 def say(*a, **k):
     if not QUIET:
         print(*a, **k)
@@ -618,9 +675,213 @@ BANNER = """                      │
     ╚═╝╚═╝╚═╝╝╚╝╚═╝╚═╝  ╚═╝╩ ╩ ╩╚═╚═╝╩
                    v{version}"""
 
+# Same mark in plain ASCII, for a console that cannot encode the blocks above.
+BANNER_ASCII = """                      |
+                      |
+                      |
+                   #######
+                 ##   |   ##
+                ##    |    ##
+             ---#-----O-----#---
+                ##    |    ##
+                 ##   |   ##
+                   #######
+                      |
+                      |
+                      |
+
+        B O U N C E   S I T R E P
+                   v{version}"""
+
+
+def banner(version):
+    """The mark, in whichever character set this console can actually print."""
+    return (BANNER if UNICODE else BANNER_ASCII).format(version=version)
+
+
+# How much trouble each category means, which is also how it gets coloured.
+CAT_COLOUR = {REPUTATION: "red", AUTH: "yellow", CONTENT: "yellow",
+              DATA: "cyan", RECIPIENT: "blue", TRANSIENT: "grey",
+              UNKNOWN: "grey"}
+
 
 def _bar(frac, width=22):
     return "#" * int(round(frac * width)) + "." * (width - int(round(frac * width)))
+
+
+def _verdict(stats, total):
+    """What is actually wrong, in words, sized to the situation.
+
+    Nine of these rather than three, because "sending-side" covers a domain on
+    Spamhaus, an SPF record with a typo and copy that trips filters, and those
+    three need different mornings.
+    """
+    cat, reason = stats["category"], stats["reason"]
+    yours = cat[REPUTATION] + cat[AUTH] + cat[CONTENT]
+    theirs = cat[DATA] + cat[RECIPIENT]
+    pct = lambda n: n / total * 100
+    w = ["## Verdict", ""]
+
+    blocked = reason.get("blocklisted", 0)
+    auth = cat[AUTH]
+    content = cat[CONTENT]
+    dead = reason.get("user_unknown", 0) + reason.get("host_unknown", 0)
+    abandoned = reason.get("mailbox_full_abandoned", 0) + reason.get("suspended", 0)
+    walled = reason.get("restricted_recipient", 0)
+
+    if blocked and pct(blocked) >= 25:
+        w += [f"**You are on a blocklist.** {blocked:,} of these bounces "
+              f"({pct(blocked):.0f}%) name one outright.",
+              "",
+              "Nothing else in this report matters until that is cleared. While "
+              "a listing stands, every provider that consults it is refusing you "
+              "before your copy is ever read, and the domains keep aging badly "
+              "the whole time."]
+    elif auth and pct(auth) >= 25:
+        w += [f"**Your authentication is broken, and that is good news.** "
+              f"{auth:,} bounces ({pct(auth):.0f}%) are SPF, DKIM, DMARC or PTR "
+              f"failures.",
+              "",
+              "This is the cheapest problem on the list. It is a DNS record, not "
+              "a reputation you have to earn back over weeks. Fix the records "
+              "and these stop the same day."]
+    elif content and pct(content) >= 30:
+        w += [f"**The message is the problem, not the sender.** {content:,} "
+              f"bounces ({pct(content):.0f}%) are filters judging the content.",
+              "",
+              "Your domains are being accepted; what you wrote is not. Look at "
+              "the links, the attachments and the phrasing before you touch "
+              "anything to do with sending."]
+    elif yours > theirs:
+        w += [f"**Your sending is the problem, not your list.** "
+              f"{pct(yours):.0f}% of these bounces are receivers refusing your "
+              f"domains, your authentication or your copy. Only "
+              f"{pct(theirs):.0f}% are addresses that do not work.",
+              "",
+              "Cleaning the list will not move this number. Cutting volume, "
+              "fixing authentication and getting delisted will."]
+    elif walled and pct(walled) >= 20:
+        w += [f"**A lot of these addresses were never reachable.** {walled:,} "
+              f"({pct(walled):.0f}%) are mailboxes that only accept mail from "
+              f"inside their own company.",
+              "",
+              "They exist, the domains are healthy, and no amount of warming "
+              "will get you in. Suppress them and judge the campaign on what "
+              "is left."]
+    elif abandoned and pct(abandoned) >= 20:
+        w += [f"**You are mailing abandoned accounts.** {abandoned:,} bounces "
+              f"({pct(abandoned):.0f}%) are mailboxes the provider itself "
+              f"calls full and inactive, or switched off.",
+              "",
+              "That is a list-age problem rather than a list-quality one. The "
+              "addresses were real once. Suppress them, and treat the source "
+              "they came from as older than it looks."]
+    elif dead and pct(dead) >= 40:
+        w += [f"**Your list is stale.** {dead:,} of these bounces "
+              f"({pct(dead):.0f}%) are addresses or domains that simply do not "
+              f"exist.",
+              "",
+              "Sending infrastructure looks healthy. This is a data problem, "
+              "and it is the easy kind: suppress them, then work out which "
+              "source they came from before you buy from it again."]
+    elif cat[TRANSIENT] and pct(cat[TRANSIENT]) >= 40:
+        w += [f"**Mostly temporary.** {pct(cat[TRANSIENT]):.0f}% of these are "
+              f"deferrals rather than refusals - greylisting, throttles, "
+              f"queues that gave up.",
+              "",
+              "There may be nothing wrong here at all. Retry and see what is "
+              "left before you change anything."]
+    elif cat[UNKNOWN] and pct(cat[UNKNOWN]) >= 40:
+        w += [f"**No clear signal.** {pct(cat[UNKNOWN]):.0f}% of this text does "
+              f"not say why delivery failed.",
+              "",
+              "That is usually a sequencer that truncates what the receiving "
+              "server said. Run with --dump-unknown and read a few by hand "
+              "before drawing conclusions."]
+    elif theirs > yours * 2:
+        w += [f"**Your list is the problem.** {pct(theirs):.0f}% of these "
+              f"bounces are addresses that do not exist or cannot receive "
+              f"mail. Sending infrastructure looks healthy."]
+    else:
+        w += [f"**It is split.** {pct(yours):.0f}% is your sending side, "
+              f"{pct(theirs):.0f}% is your data.",
+              "",
+              "Fix the sending side first. Bad addresses cost you one send "
+              "each; a reputation problem taxes every send you make."]
+    w.append("")
+    return w
+
+
+def _trend(stats):
+    """Whether it is getting better or worse, which a single total cannot say."""
+    if len(stats["by_date"]) < 4:
+        return []
+    days = sorted(stats["by_date"])
+    half = len(days) // 2
+    early = sum(stats["by_date"][d] for d in days[:half])
+    late = sum(stats["by_date"][d] for d in days[half:])
+    ey = sum(stats["date_yours"][d] for d in days[:half])
+    ly = sum(stats["date_yours"][d] for d in days[half:])
+
+    w = ["## Trend", "",
+         "| Period | Days | Bounces | Sending-side |",
+         "|---|---:|---:|---:|",
+         f"| {days[0]} to {days[half-1]} | {half} | {early:,} | "
+         f"{ey / max(early, 1) * 100:.0f}% |",
+         f"| {days[half]} to {days[-1]} | {len(days) - half} | {late:,} | "
+         f"{ly / max(late, 1) * 100:.0f}% |", ""]
+    if late > early * 1.3:
+        w.append(f"Bounces are **rising**: {late / max(early, 1):.1f}x more in "
+                 f"the second half of this window.")
+    elif early > late * 1.3:
+        w.append(f"Bounces are **falling**: {early / max(late, 1):.1f}x fewer in "
+                 f"the second half of this window.")
+    else:
+        w.append("Volume is broadly flat across the window.")
+    peak = max(stats["by_date"], key=lambda d: stats["by_date"][d])
+    w += ["", f"Worst single day: **{peak}** with {stats['by_date'][peak]:,} "
+              f"bounces.", ""]
+    return w
+
+
+def _next_steps(stats, cat):
+    """The ordered list of what to do, cheapest and most urgent first.
+
+    Delisting comes before everything because nothing else you change matters
+    while a listing stands. Authentication comes next because it is a DNS edit
+    rather than weeks of warming.
+    """
+    w = ["## Do this first", ""]
+    n = 1
+    if stats["blocklist"]:
+        hits = sum(stats["blocklist"].values())
+        w.append(f"{n}. **Get delisted.** {hits:,} bounces cite a public "
+                 f"blocklist. Nothing else you change matters while that stands.")
+        n += 1
+    if cat[AUTH]:
+        w.append(f"{n}. **Fix authentication.** {cat[AUTH]:,} bounces are SPF, "
+                 f"DKIM, DMARC or PTR failures. This is a DNS change, not a "
+                 f"warming problem - it can be done today.")
+        n += 1
+    if stats["action"][PAUSE]:
+        w.append(f"{n}. **Pause the worst domains.** {stats['action'][PAUSE]:,} "
+                 f"bounces are receivers refusing your sending identity. "
+                 f"Continuing to send deepens it.")
+        n += 1
+    if stats["action"][SUPPRESS]:
+        w.append(f"{n}. **Suppress {stats['action'][SUPPRESS]:,} addresses** "
+                 f"that will never accept mail. Use --suppress-list to export "
+                 f"them.")
+        n += 1
+    if cat[CONTENT]:
+        w.append(f"{n}. **Rewrite the copy.** {cat[CONTENT]:,} bounces are "
+                 f"filters judging the message rather than the sender.")
+        n += 1
+    if stats["unknown"]:
+        w.append(f"{n}. {stats['unknown']:,} bounces could not be read. Use "
+                 f"--dump-unknown to see them.")
+    w.append("")
+    return w
 
 
 def build_report(stats, source_name):
@@ -659,31 +920,7 @@ def build_report(stats, source_name):
         w(f"{total:,} bounces analysed{period}")
         w("")
 
-    # --- verdict ---------------------------------------------------------
-    yours = cat[REPUTATION] + cat[AUTH] + cat[CONTENT]
-    theirs = cat[DATA] + cat[RECIPIENT]
-    w("## Verdict")
-    w("")
-    if total == 0:
-        w("No bounce text found.")
-        return "\n".join(out)
-    if yours > theirs:
-        w(f"**Your sending is the problem, not your list.** "
-          f"{yours/total*100:.0f}% of these bounces are receivers refusing "
-          f"your domains, your authentication or your copy. Only "
-          f"{theirs/total*100:.0f}% are bad addresses.")
-        w("")
-        w("Cleaning the list will not fix this. Cutting volume, fixing "
-          "authentication and getting delisted will.")
-    elif theirs > yours * 2:
-        w(f"**Your list is the problem.** {theirs/total*100:.0f}% of these "
-          f"bounces are addresses that do not exist or cannot receive mail. "
-          f"Sending infrastructure looks healthy.")
-    else:
-        w(f"**Split problem.** {yours/total*100:.0f}% sending-side, "
-          f"{theirs/total*100:.0f}% list-side. Fix the sending side first; "
-          f"bad addresses are cheap by comparison.")
-    w("")
+    out += _verdict(stats, total)
 
     # --- categories ------------------------------------------------------
     w("## Where the bounces come from")
@@ -746,67 +983,10 @@ def build_report(stats, source_name):
                 w(f"| {d} | {c:,} | {y/c*100:.0f}% |")
             w("")
 
-    # --- trend -----------------------------------------------------------
-    if len(stats["by_date"]) >= 4:
-        w("## Trend")
-        w("")
-        days = sorted(stats["by_date"])
-        half = len(days) // 2
-        early = sum(stats["by_date"][d] for d in days[:half])
-        late = sum(stats["by_date"][d] for d in days[half:])
-        ey = sum(stats["date_yours"][d] for d in days[:half])
-        ly = sum(stats["date_yours"][d] for d in days[half:])
-        w(f"| Period | Days | Bounces | Sending-side |")
-        w(f"|---|---:|---:|---:|")
-        w(f"| {days[0]} to {days[half-1]} | {half} | {early:,} | "
-          f"{ey/max(early,1)*100:.0f}% |")
-        w(f"| {days[half]} to {days[-1]} | {len(days)-half} | {late:,} | "
-          f"{ly/max(late,1)*100:.0f}% |")
-        w("")
-        if late > early * 1.3:
-            w(f"Bounces are **rising**: {late/max(early,1):.1f}x more in the "
-              f"second half of this window.")
-        elif early > late * 1.3:
-            w(f"Bounces are **falling**: {early/max(late,1):.1f}x fewer in the "
-              f"second half of this window.")
-        else:
-            w("Volume is broadly flat across the window.")
-        w("")
-        peak = max(stats["by_date"], key=lambda d: stats["by_date"][d])
-        w(f"Worst single day: **{peak}** with {stats['by_date'][peak]:,} bounces.")
-        w("")
+    out += _trend(stats)
 
-    # --- what to do ------------------------------------------------------
-    w("## Do this first")
-    w("")
-    n = 1
-    if stats["blocklist"]:
-        hits = sum(stats["blocklist"].values())
-        w(f"{n}. **Get delisted.** {hits:,} bounces cite a public blocklist. "
-          f"Nothing else you change matters while that stands.")
-        n += 1
-    if cat[AUTH]:
-        w(f"{n}. **Fix authentication.** {cat[AUTH]:,} bounces are SPF, DKIM, "
-          f"DMARC or PTR failures. This is a DNS change, not a warming problem "
-          f"- it can be done today.")
-        n += 1
-    if stats["action"][PAUSE]:
-        w(f"{n}. **Pause the worst domains.** {stats['action'][PAUSE]:,} bounces "
-          f"are receivers refusing your sending identity. Continuing to send "
-          f"deepens it.")
-        n += 1
-    if stats["action"][SUPPRESS]:
-        w(f"{n}. **Suppress {stats['action'][SUPPRESS]:,} addresses** that will "
-          f"never accept mail. Use --suppress-list to export them.")
-        n += 1
-    if cat[CONTENT]:
-        w(f"{n}. **Rewrite the copy.** {cat[CONTENT]:,} bounces are filters "
-          f"judging the message rather than the sender.")
-        n += 1
-    if stats["unknown"]:
-        w(f"{n}. {stats['unknown']:,} bounces could not be read. "
-          f"Use --dump-unknown to see them.")
-    w("")
+    out += _next_steps(stats, cat)
+
     w("---")
     w(f"Generated by bouncesitrep {__version__}")
     return "\n".join(out)
@@ -834,6 +1014,35 @@ def run_one(text, as_json):
     return 0
 
 
+def sniff_delimiter(path):
+    """Work out what separates the columns.
+
+    A file called .csv is not always comma separated. Excel writes semicolons
+    in most of Europe, plenty of "CSV" exports are really tab separated, and a
+    .tsv always is. Reading a semicolon file as commas gives you one giant
+    column named "email;bounce_msg" and an output nobody can use, so guess
+    from the header rather than from the extension.
+    """
+    if path.lower().endswith(".tsv"):
+        return "\t"
+    with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
+        head = fh.readline()
+    if not head.strip():
+        return ","
+    # The winner is whichever candidate splits the header into the most
+    # fields. A comma inside a quoted heading would fool a naive count, so
+    # let the csv module do the splitting.
+    best, best_n = ",", 0
+    for cand in (",", ";", "\t", "|"):
+        try:
+            n = len(next(csv.reader([head], delimiter=cand)))
+        except csv.Error:
+            continue
+        if n > best_n:
+            best, best_n = cand, n
+    return best
+
+
 def _out_path(name, outdir):
     """A bare filename goes to the output directory; a path is left alone.
 
@@ -842,6 +1051,77 @@ def _out_path(name, outdir):
     """
     p = os.path.expanduser(name)
     return p if os.path.dirname(p) else os.path.join(outdir, p)
+
+
+def _summarise(stats, args, out_path, total):
+    """Print the run summary. False means there was nothing to diagnose."""
+    kept = stats["rows"] if args.all_rows else stats["total"]
+    arrow = "\u2192" if UNICODE else "->"
+    say("")
+    name = paint(os.path.basename(out_path), "bold")
+    say(f"  {stats['rows']:,} rows read  {arrow}  {kept:,} written to {name}")
+
+    if not stats["total"]:
+        say(paint("  nothing in that file looks like a bounce", "yellow"))
+        say("")
+        return False
+
+    # The rate needs a denominator, so it only appears when the export carried
+    # the leads that did not bounce as well.
+    if stats["empty"]:
+        rate = stats["total"] / max(stats["rows"], 1) * 100
+        tint = "red" if rate >= 5 else ("yellow" if rate >= 2 else "green")
+        of = paint(f"({stats['total']:,} of {stats['rows']:,} leads)", "grey")
+        say(f"  {paint('%.1f%%' % rate, 'bold', tint)} bounce rate  {of}")
+    say("")
+
+    block = "\u2588" if UNICODE else "#"
+    rest = "\u00b7" if UNICODE else "."
+    for cat, v in stats["category"].most_common():
+        if not v:
+            continue
+        frac = v / total
+        fill = max(1, int(round(frac * 24)))
+        bar = (paint(block * fill, CAT_COLOUR.get(cat, "grey"))
+               + paint(rest * (24 - fill), "grey"))
+        say(f"    {cat:<15} {v:>8,}  {frac * 100:5.1f}%  {bar}")
+    say("")
+    return True
+
+
+def _write_extras(stats, args, outdir, base, path, suppress, unknowns, email_col):
+    """The optional side files: suppression list, unreadable dump, diagnosis."""
+    if args.suppress_list:
+        args.suppress_list = _out_path(args.suppress_list, outdir)
+    if args.dump_unknown:
+        args.dump_unknown = _out_path(args.dump_unknown, outdir)
+
+    if args.suppress_list and suppress:
+        # The same dead address turns up once per campaign it was mailed in.
+        seen, uniq = set(), []
+        for a in suppress:
+            if a.lower() not in seen:
+                seen.add(a.lower())
+                uniq.append(a)
+        with open(args.suppress_list, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(uniq) + "\n")
+        say(f"    {len(uniq):,} addresses -> {args.suppress_list}")
+    elif args.suppress_list and not email_col:
+        print("  no email column found, cannot write a suppression list",
+              file=sys.stderr)
+
+    if args.dump_unknown and unknowns:
+        with open(args.dump_unknown, "w", encoding="utf-8") as fh:
+            for u in unknowns:
+                fh.write(" ".join(u.split()) + "\n")
+        say(f"    {len(unknowns):,} unreadable -> {args.dump_unknown}")
+
+    if args.report:
+        rp = _out_path(args.report, outdir) if isinstance(args.report, str) \
+            else os.path.join(outdir, f"{base} - diagnosis.md")
+        with open(rp, "w", encoding="utf-8") as fh:
+            fh.write(build_report(stats, os.path.basename(path)) + "\n")
+        say(f"    diagnosis -> {os.path.basename(rp)}")
 
 
 def run_csv(path, args):
@@ -855,8 +1135,9 @@ def run_csv(path, args):
         print(f"{os.path.basename(out_path)} exists (use --force)", file=sys.stderr)
         return 1
 
+    delim = sniff_delimiter(path)
     with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh:
-        reader = csv.DictReader(fh)
+        reader = csv.DictReader(fh, delimiter=delim)
         if not reader.fieldnames:
             print(f"{path}: empty file", file=sys.stderr)
             return 1
@@ -878,8 +1159,12 @@ def run_csv(path, args):
     host_col = args.host_column or cols["host"]
     date_col = cols["date"]
 
-    say(f"  [ bounce sitrep v{__version__} ]")
-    say(f"  reading '{bounce_col}'"
+    if not QUIET:
+        say(paint(banner(__version__), "cyan"))
+        say("")
+    shown = {",": "", ";": " (semicolon separated)", "\t": " (tab separated)",
+             "|": " (pipe separated)"}[delim]
+    say(f"  reading '{bounce_col}'{shown}"
         + (f", host from '{host_col}'" if host_col else "")
         + (f", dates from '{date_col}'" if date_col else ""))
 
@@ -907,7 +1192,7 @@ def run_csv(path, args):
 
     with open(path, newline="", encoding="utf-8-sig", errors="replace") as fh, \
             open(out_path, "w", newline="", encoding="utf-8") as out:
-        reader = csv.DictReader(fh)
+        reader = csv.DictReader(fh, delimiter=delim)
         writer = csv.DictWriter(out, fieldnames=reader.fieldnames + FIELDS,
                                 lineterminator="\n")
         writer.writeheader()
@@ -963,49 +1248,10 @@ def run_csv(path, args):
                     suppress.append(addr)
 
     total = max(stats["total"], 1)
-    kept = stats["rows"] if args.all_rows else stats["total"]
-    say(f"  {stats['rows']:,} rows read -> {kept:,} written to "
-        f"{os.path.basename(out_path)}")
-    if stats["empty"]:
-        rate = stats["total"] / max(stats["rows"], 1) * 100
-        say(f"    {stats['total']:,} of {stats['rows']:,} leads bounced "
-            f"({rate:.1f}%)")
-    say(f"    {stats['total']:,} bounces classified:")
-    for c, v in stats["category"].most_common():
-        if v:
-            say(f"      {c:15} {v:>8,}  ({v/total*100:5.1f}%)")
+    if not _summarise(stats, args, out_path, total):
+        return 0
 
-    if args.suppress_list:
-        args.suppress_list = _out_path(args.suppress_list, outdir)
-    if args.dump_unknown:
-        args.dump_unknown = _out_path(args.dump_unknown, outdir)
-
-    if args.suppress_list and suppress:
-        seen, uniq = set(), []
-        for a in suppress:
-            k = a.lower()
-            if k not in seen:
-                seen.add(k)
-                uniq.append(a)
-        with open(args.suppress_list, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(uniq) + "\n")
-        say(f"    {len(uniq):,} addresses -> {args.suppress_list}")
-    elif args.suppress_list and not email_col:
-        print("  no email column found, cannot write a suppression list",
-              file=sys.stderr)
-
-    if args.dump_unknown and unknowns:
-        with open(args.dump_unknown, "w", encoding="utf-8") as fh:
-            for u in unknowns:
-                fh.write(" ".join(u.split()) + "\n")
-        say(f"    {len(unknowns):,} unreadable -> {args.dump_unknown}")
-
-    if args.report:
-        rp = _out_path(args.report, outdir) if isinstance(args.report, str) \
-            else os.path.join(outdir, f"{base} - diagnosis.md")
-        with open(rp, "w", encoding="utf-8") as fh:
-            fh.write(build_report(stats, os.path.basename(path)) + "\n")
-        say(f"    diagnosis -> {os.path.basename(rp)}")
+    _write_extras(stats, args, outdir, base, path, suppress, unknowns, email_col)
     return 0
 
 

@@ -1,5 +1,7 @@
 # bouncesitrep
 
+[![tests](https://github.com/miralemalic/bouncesitrep/actions/workflows/tests.yml/badge.svg)](https://github.com/miralemalic/bouncesitrep/actions/workflows/tests.yml)
+
 ```
                       │
                       │
@@ -28,14 +30,22 @@ you one.
 ```
 $ bouncesitrep export.csv --report
 
-  [ bounce sitrep v2.0.0 ]
   reading 'bounce_msg', host from 'mx', dates from 'last_sent_at'
-  15,635 rows -> export - classified.csv
-    reputation         9,409  ( 60.2%)
-    recipient          2,418  ( 15.5%)
-    data               2,089  ( 13.4%)
+
+  255,979 rows read  ->  7,233 written to export - classified.csv
+  2.8% bounce rate  (7,233 of 255,979 leads)
+
+    reputation         2,753   38.1%  #########...............
+    data               1,584   21.9%  #####...................
+    recipient          1,403   19.4%  #####...................
+    authentication       933   12.9%  ###.....................
+    transient             80    1.1%  #.......................
+
     diagnosis -> export - diagnosis.md
 ```
+
+The bars are coloured in a terminal and plain when you pipe it, so the output
+stays greppable.
 
 One file. No dependencies. Python 3.9 or newer.
 
@@ -98,6 +108,10 @@ have to scroll through. `--all-rows` keeps everything if you want it.
 It reads exports from PlusVibe, Instantly, Smartlead or anything else that can
 write a CSV. You do not pass `--column`: it scores every column on what the
 values look like, not on the name, and reports which one it picked.
+
+Comma, semicolon, tab or pipe separated, and `.tsv` too. It reads the header
+to work out which rather than trusting the extension, because Excel writes
+semicolons across most of Europe.
 
 **Feed it the whole campaign export, not a bounces-only one.** Most leads in
 that file never bounced, and those rows are the denominator - they are what
@@ -261,7 +275,7 @@ If it scores worse on your corpus, that is a real result and I want the sample.
 python3 -m unittest discover -s tests -v
 ```
 
-101 tests, standard library only. Three of them are structural rather than
+121 tests, standard library only. Three of them are structural rather than
 example-based: no sending-side fault may suppress an address, no transient
 fault may suppress, and no data fault may pause a domain. Those are the
 mistakes that cost real money, so they run against every entry in the table

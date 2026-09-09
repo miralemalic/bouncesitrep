@@ -499,7 +499,8 @@ class TestCsv(unittest.TestCase):
         text = read(rp)
         self.assertIn("Bounce diagnosis", text)
         self.assertIn("Spamhaus", text)
-        self.assertIn("Your sending is the problem", text)
+        # a blocklist by name outranks the generic sending-side verdict
+        self.assertIn("You are on a blocklist", text)
 
     def test_report_opens_with_the_banner_and_a_live_version(self):
         rows = [["a%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
@@ -523,7 +524,7 @@ class TestCsv(unittest.TestCase):
         p = self.write_csv(rows)
         rp = os.path.join(self.tmp, "diag.md")
         bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        self.assertIn("Your list is the problem", read(rp))
+        self.assertIn("Your list is stale", read(rp))
 
     def test_missing_bounce_column_is_an_error(self):
         p = self.write_csv([["a@example.com", "", "", ""]],
@@ -547,6 +548,176 @@ class TestCsv(unittest.TestCase):
         p = self.write_csv([["a@example.com", "", "", "550 5.1.1\nuser unknown"]])
         bc.run_csv(p, _args(outdir=self.tmp))
         self.assertEqual(len(self.out_rows()), 1)
+
+
+class TestDelimiters(unittest.TestCase):
+    """A file called .csv is not always comma separated. Excel writes
+    semicolons across most of Europe, and reading one as commas gives you a
+    single column named "email;bounce_msg" and an output nobody can use."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def write(self, name, text):
+        p = os.path.join(self.tmp, name)
+        with io.open(p, "w", newline="", encoding="utf-8") as fh:
+            fh.write(text)
+        return p
+
+    def test_sniffs_each_separator(self):
+        for name, sep in (("a.csv", ","), ("b.csv", ";"), ("c.csv", "\t"),
+                          ("d.csv", "|")):
+            with self.subTest(sep=repr(sep)):
+                p = self.write(name, sep.join(["email", "bounce_msg"]) + "\n"
+                               + sep.join(["a@example.com", "550 5.1.1 user unknown"])
+                               + "\n")
+                self.assertEqual(bc.sniff_delimiter(p), sep)
+
+    def test_tsv_is_tab_separated_by_name(self):
+        p = self.write("x.tsv", "email\tbounce_msg\n")
+        self.assertEqual(bc.sniff_delimiter(p), "\t")
+
+    def test_a_semicolon_file_is_parsed_into_real_columns(self):
+        p = self.write("semi.csv",
+                       "email;bounce_msg\na@example.com;550 5.1.1 user unknown\n")
+        self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp)), 0)
+        with io.open(os.path.join(self.tmp, "semi - classified.csv"),
+                     newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+        self.assertEqual(rows[0]["email"], "a@example.com")
+        self.assertEqual(rows[0]["bounce_reason"], "user_unknown")
+
+    def test_a_semicolon_file_can_still_write_a_suppression_list(self):
+        """The old bug: no real email column meant no suppression list."""
+        p = self.write("semi.csv",
+                       "email;bounce_msg\na@example.com;550 5.1.1 user unknown\n")
+        sl = os.path.join(self.tmp, "dead.txt")
+        bc.run_csv(p, _args(outdir=self.tmp, suppress_list=sl))
+        self.assertEqual(read_lines(sl), ["a@example.com"])
+
+    def test_an_empty_file_does_not_guess(self):
+        p = self.write("empty.csv", "")
+        self.assertEqual(bc.sniff_delimiter(p), ",")
+
+
+class TestConsole(unittest.TestCase):
+    """Colour and block characters are decoration. They must never be the
+    reason the program fails or the output stops being greppable."""
+
+    def test_paint_is_a_no_op_without_colour(self):
+        old = bc.COLOUR
+        try:
+            bc.COLOUR = False
+            self.assertEqual(bc.paint("hello", "red", "bold"), "hello")
+        finally:
+            bc.COLOUR = old
+
+    def test_paint_wraps_and_always_resets(self):
+        old = bc.COLOUR
+        try:
+            bc.COLOUR = True
+            got = bc.paint("hello", "red")
+            self.assertIn("hello", got)
+            self.assertTrue(got.endswith("\033[0m"), "must reset or it bleeds")
+        finally:
+            bc.COLOUR = old
+
+    def test_colour_is_off_when_not_a_terminal(self):
+        """Under unittest stdout is captured, so this must be off already."""
+        self.assertFalse(bc._colour_ok())
+
+    def test_banner_has_an_ascii_twin(self):
+        ascii_banner = bc.BANNER_ASCII.format(version="9.9.9")
+        ascii_banner.encode("ascii")            # raises if it is not pure ASCII
+        self.assertIn("9.9.9", ascii_banner)
+
+    def test_banner_picks_a_set_this_console_can_print(self):
+        old = bc.UNICODE
+        try:
+            bc.UNICODE = False
+            bc.banner("1.0.0").encode("ascii")  # must not raise
+            bc.UNICODE = True
+            self.assertIn("\u2588", bc.banner("1.0.0"))
+        finally:
+            bc.UNICODE = old
+
+    def test_both_banners_fit_eighty_columns(self):
+        for b in (bc.BANNER, bc.BANNER_ASCII):
+            widest = max(len(l) for l in b.format(version="2.0.0").split("\n"))
+            self.assertLessEqual(widest, 80)
+
+
+class TestVerdicts(unittest.TestCase):
+    """Sending-side covers a Spamhaus listing, a typo in an SPF record and
+    copy that trips filters. Those are three different mornings, so the
+    verdict names which one rather than lumping them together."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def verdict_for(self, message, n=30):
+        p = os.path.join(self.tmp, "in.csv")
+        with io.open(p, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh, lineterminator="\n")
+            w.writerow(["email", "mx", "last_sent_at", "bounce_msg"])
+            for i in range(n):
+                w.writerow(["a%d@example.com" % i, "", "2026-09-01", message])
+        rp = os.path.join(self.tmp, "d.md")
+        bc.run_csv(p, _args(outdir=self.tmp, report=rp, force=True))
+        return read(rp)
+
+    def test_blocklist_outranks_everything(self):
+        self.assertIn("You are on a blocklist",
+                      self.verdict_for("554 5.7.1 blocked using dbl.spamhaus.org"))
+
+    def test_broken_auth_is_called_the_cheap_problem(self):
+        text = self.verdict_for("550 5.7.26 Unauthenticated email is not accepted")
+        self.assertIn("authentication is broken", text)
+        self.assertIn("cheapest problem", text)
+
+    def test_content_verdict_points_at_the_copy(self):
+        text = self.verdict_for('550 "detected your message as spam"')
+        self.assertIn("message is the problem, not the sender", text)
+
+    def test_dead_addresses_read_as_a_stale_list(self):
+        text = self.verdict_for("550 5.1.1 The email account does not exist")
+        self.assertIn("list is stale", text)
+
+    def test_abandoned_accounts_get_their_own_verdict(self):
+        text = self.verdict_for("552 5.2.2 out of storage space and inactive")
+        self.assertIn("abandoned accounts", text)
+
+    def test_walled_mailboxes_get_their_own_verdict(self):
+        text = self.verdict_for("5.7.133 RESOLVER.RST."
+                                "SenderNotAuthenticatedForGroup")
+        self.assertIn("never reachable", text)
+
+    def test_transient_says_there_may_be_nothing_wrong(self):
+        text = self.verdict_for("451 4.7.1 Greylisted, please try again later")
+        self.assertIn("Mostly temporary", text)
+
+    def test_unreadable_text_admits_it(self):
+        text = self.verdict_for("qqq zzz nothing here")
+        self.assertIn("No clear signal", text)
+
+    def test_every_verdict_is_a_distinct_sentence(self):
+        """Nine situations should not produce the same paragraph nine times."""
+        seen = set()
+        for msg in ("554 5.7.1 blocked using dbl.spamhaus.org",
+                    "550 5.7.26 Unauthenticated email is not accepted",
+                    '550 "detected your message as spam"',
+                    "550 5.1.1 The email account does not exist",
+                    "552 5.2.2 out of storage space and inactive",
+                    "5.7.133 RESOLVER.RST.SenderNotAuthenticatedForGroup",
+                    "451 4.7.1 Greylisted, please try again later",
+                    "qqq zzz nothing here"):
+            with self.subTest(msg=msg[:30]):
+                body = self.verdict_for(msg).split("## Verdict")[1]
+                head = body.split("\n\n")[1]
+                self.assertNotIn(head, seen, "duplicate verdict wording")
+                seen.add(head)
 
 
 class TestEmptyRows(unittest.TestCase):
@@ -804,15 +975,17 @@ class TestPathHandling(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def run_main(self, argv):
+        # main() sets the module-level QUIET from its arguments, so put it back
+        # or every test after this one starts printing.
         import contextlib
-        old = sys.argv
+        old_argv, old_quiet = sys.argv, bc.QUIET
         sys.argv = ["bouncesitrep"] + argv
         err = io.StringIO()
         try:
             with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
                 return bc.main(), err.getvalue()
         finally:
-            sys.argv = old
+            sys.argv, bc.QUIET = old_argv, old_quiet
 
     def test_missing_csv_is_an_error(self):
         code, err = self.run_main([os.path.join(self.tmp, "nope.csv")])
