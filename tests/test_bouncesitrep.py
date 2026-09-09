@@ -437,7 +437,7 @@ class TestColumnDetection(unittest.TestCase):
 def _args(**kw):
     d = dict(column=None, host_column=None, outdir=None, report=None,
              suppress_list=None, dump_unknown=None, force=False, quiet=True,
-             all_rows=False)
+             all_rows=False, banner=False, no_banner=True)
     d.update(kw)
     return argparse.Namespace(**d)
 

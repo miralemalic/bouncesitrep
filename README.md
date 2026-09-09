@@ -89,7 +89,10 @@ bouncesitrep export.csv --suppress-list dead.txt # addresses never to mail again
 bouncesitrep export.csv --dump-unknown miss.txt  # what it could not read
 bouncesitrep export.csv --all-rows               # keep the non-bounces too
 bouncesitrep "550 5.1.1 user unknown"            # one message
+bouncesitrep --banner                            # just the mark
 ```
+
+`--no-banner` skips the mark, for a wrapper script that has drawn it already.
 
 `-o` decides where everything lands. A bare filename goes there with the rest;
 a full path is left where you put it:

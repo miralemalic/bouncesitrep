@@ -1153,7 +1153,7 @@ def run_csv(path, args):
     host_col = args.host_column or cols["host"]
     date_col = cols["date"]
 
-    if not QUIET:
+    if not (QUIET or args.no_banner):
         say(paint(banner(__version__), "cyan"))
         say("")
     shown = {",": "", ";": " (semicolon separated)", "\t": " (tab separated)",
@@ -1251,7 +1251,8 @@ def run_csv(path, args):
 def main():
     ap = argparse.ArgumentParser(
         description="Read bounce text from a sequencer export and say what is wrong.")
-    ap.add_argument("input", help="a bounce message, or a path to a CSV export")
+    ap.add_argument("input", nargs="?",
+                    help="a bounce message, or a path to a CSV export")
     ap.add_argument("-c", "--column", help="bounce-text column (default: detect)")
     ap.add_argument("--host-column", help="recipient mail host column (default: detect)")
     ap.add_argument("-o", "--outdir", help="output directory")
@@ -1262,6 +1263,10 @@ def main():
     ap.add_argument("--dump-unknown", metavar="FILE",
                     help="write every message it could not read")
     ap.add_argument("--json", action="store_true", help="JSON output for one message")
+    ap.add_argument("--banner", action="store_true",
+                    help="print the mark and exit")
+    ap.add_argument("--no-banner", action="store_true",
+                    help="skip the mark, for wrappers that drew it already")
     ap.add_argument("--all-rows", action="store_true",
                     help="keep every row in the output, not just the bounces")
     ap.add_argument("--force", action="store_true", help="overwrite existing output")
@@ -1271,6 +1276,12 @@ def main():
 
     global QUIET
     QUIET = args.quiet
+
+    if args.banner:
+        print(paint(banner(__version__), "cyan"))
+        return 0
+    if args.input is None:
+        ap.error("give it a CSV export or a single bounce message")
 
     path = os.path.expanduser(args.input)
     # Anything ending .csv/.tsv was meant to be a file. No bounce message ends
