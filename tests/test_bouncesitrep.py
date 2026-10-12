@@ -308,7 +308,7 @@ class TestStatusCodes(unittest.TestCase):
             'rate_limited')
 
     def test_user_unknown_codes(self):
-        for code in ('5.1.1', '5.1.2', '5.1.3', '5.1.10'):
+        for code in ('5.1.1', '5.1.3', '5.1.10'):
             with self.subTest(code=code):
                 self.assertEqual(reason_of(f'550 {code} bad destination'),
                                  'user_unknown')
@@ -804,6 +804,29 @@ class TestRfc3463Families(unittest.TestCase):
         self.assertNotEqual(result['action'], bc.SUPPRESS)
         self.assertEqual(result['action'], bc.FIXAUTH)
 
+    def test_5_1_0_says_nothing_about_the_address(self):
+        # Finance gateways send this to senders they also block outright, so
+        # it must not delete the lead.
+        self.assertEqual(
+            category_action('550 #5.1.0 Address rejected.'),
+            (bc.UNKNOWN, bc.REVIEW))
+
+    def test_address_family_by_number(self):
+        self.assertEqual(reason_of('550 5.1.2 domain could not be found'),
+                         'host_unknown')
+        self.assertEqual(reason_of('550 5.1.6 mailbox has moved'),
+                         'has_moved')
+
+    def test_mail_system_family(self):
+        for code in ('5.3.1', '5.3.2', '5.3.5', '4.3.2'):
+            with self.subTest(code=code):
+                self.assertEqual(reason_of(f'550 {code} system trouble'),
+                                 'system_error')
+        self.assertEqual(reason_of('554 5.3.3 feature not supported'),
+                         'media_error')
+        self.assertEqual(classify('554 5.3.0 something')['_tier'],
+                         bc.T_GENERIC)
+
     def test_mailbox_family(self):
         self.assertEqual(reason_of('552 5.2.3 message length exceeds limit'),
                          'email_too_large')
@@ -841,7 +864,7 @@ class TestRfc3463Families(unittest.TestCase):
                          'policy_violation')
         self.assertEqual(reason_of('550 5.7.2 list expansion prohibited'),
                          'list_expansion')
-        for code in ('5.7.4', '5.7.5', '5.7.6', '5.7.7'):
+        for code in ('5.7.3', '5.7.4', '5.7.5', '5.7.6', '5.7.7'):
             with self.subTest(code=code):
                 self.assertEqual(reason_of(f'550 {code} crypto failure'),
                                  'crypto_error')
@@ -928,6 +951,17 @@ class TestMicrosoftCodes(unittest.TestCase):
             reason_of('550 5.4.1 Recipient address rejected: Access denied. '
                       'AS(201806281)'),
             'user_unknown')
+
+    def test_expiry_and_tls_codes(self):
+        for text, reason in (
+                ('554 5.4.7 [internal] exceeded max time without delivery',
+                 'expired'),
+                ('450 4.7.323 tlsa-invalid: The domain failed DANE '
+                 'validation', 'crypto_error'),
+                ("550 5.7.233 Your message can't be sent because your tenant "
+                 'exceeded its daily limit', 'throttled')):
+            with self.subTest(text=text[:20]):
+                self.assertEqual(reason_of(text), reason)
 
     def test_the_5_7_5xx_range_is_not_all_one_thing(self):
         for text, reason in (
@@ -1077,7 +1111,17 @@ class TestNewPhrases(unittest.TestCase):
                 ('example.com has no real MX records. Ask your email '
                  'administrator to fix this.', 'sender_address_bad'),
                 ('550 We were unable to find the recipient domain.',
-                 'host_unknown')):
+                 'host_unknown'),
+                ('Message discarded as high-probability spam',
+                 'spam_detected'),
+                ('DT:SPM .For more information, please visit '
+                 'https://feedback.qiye.163.com/', 'spam_detected'),
+                ('550 Message rejected due to user rules.',
+                 'recipient_blocked'),
+                ('550 verify address failed, User not found',
+                 'user_unknown'),
+                ('<a@example.com> Mailbox has exceeded the limit',
+                 'mailbox_full')):
             with self.subTest(text=text[:30]):
                 self.assertEqual(reason_of(text), reason)
 

@@ -118,9 +118,9 @@ def say(*args, **kws):
         print(*args, **kws)
 
 
-# Categories answer "whose problem is it?" and each one lands on a different
-# desk.  Reputation and authentication are kept apart because one takes weeks
-# of warming and the other is a DNS record you can fix before lunch.
+# Categories say whose problem a bounce is.  Reputation and authentication
+# are kept apart: one takes weeks of warming, the other is a DNS record you
+# can fix the same day.
 DATA = 'data'                       # the address is dead or wrong
 REPUTATION = 'reputation'           # your sending identity is refused
 AUTH = 'authentication'             # SPF, DKIM, DMARC or PTR is broken
@@ -143,9 +143,8 @@ REVIEW = 'review'                   # classified, but look at it yourself
 
 ACTIONS = (SUPPRESS, RETRY, RETRY_ONCE, PAUSE, FIXAUTH, REWRITE, REVIEW)
 
-# reason -> (meaning, category, action).  The meaning is what lets somebody
-# who has never heard of 5.7.133 read the export, and that is most of the
-# people who will open it.
+# reason -> (meaning, category, action).  The meaning lets someone who has
+# never heard of 5.7.133 read the export.
 REASONS = {
     'user_unknown': (
         'The address does not exist', DATA, SUPPRESS),
@@ -212,7 +211,8 @@ REASONS = {
         REVIEW),
 
     'auth_failure': (
-        'SPF, DKIM or DMARC failed - the receiver cannot verify you is you',
+        'SPF, DKIM or DMARC failed, so the receiver cannot confirm the mail '
+        'is yours',
         AUTH, FIXAUTH),
     'require_ptr': (
         'Your sending IP has no valid reverse DNS record', AUTH, FIXAUTH),
@@ -221,8 +221,7 @@ REASONS = {
         'A spam filter judged the message itself, not the sender',
         CONTENT, REWRITE),
     'policy_violation': (
-        'A policy rule refused the message - usually the sender, not the '
-        'words',
+        'A policy rule refused the message without saying which rule',
         REPUTATION, REVIEW),
     'virus_detected': (
         'The message was flagged as carrying malware', CONTENT, REVIEW),
@@ -252,8 +251,8 @@ REASONS = {
 
 
 # Rules are tried in tiers, most trustworthy first.  Machine tokens beat
-# prose: a program emitted the token, while a person typed the prose,
-# sometimes years ago and sometimes wrongly.
+# prose: a program emitted the token, while a person wrote the prose, and
+# people get it wrong.
 T_TOKEN = 1         # RESOLVER.ADR..., STOREDRV..., vendor gateway codes
 T_BLOCKLIST = 2     # a named blocklist settles it
 T_ESC = 3           # specific enhanced status codes
@@ -302,8 +301,7 @@ RULES = [
       'Microsoft: the recipient is not in the tenant directory'),
     # Microsoft's NDR reference lists 5.5.0 "mailbox unavailable" as a
     # hotmail.com or outlook.com address that SMTP lookup could not find.
-    # The S2017062302 tag is the Outlook.com flavour of it.  It used to be
-    # caught by a Barracuda pattern below, which said to pause the domain.
+    # The S2017062302 tag is the Outlook.com flavour of it.
     R(T_TOKEN, r'mailbox unavailable \(S2017062302\)', 'user_unknown',
       'Outlook.com: no such mailbox'),
     R(T_TOKEN, r'QuotaExceededException|STOREDRV\.Deliver\.Exception:.*Quota',
@@ -347,11 +345,11 @@ RULES = [
     R(T_TOKEN, r'Decommission of Email to Text', 'host_unknown',
       'Verizon shut down email-to-text (vtext.com)'),
     # Spectrum and Cox tag rejections with AUP# codes.  Spectrum's table
-    # of what each number means is only published behind JavaScript.
-    # XXX: once it can be read, split this by code.
+    # of what each number means only loads in a browser.
+    # XXX: split this by code once someone copies that table out.
     R(T_TOKEN, r'\bAUP#', 'policy_violation',
       'ISP acceptable-use rejection (Spectrum, Cox)'),
-    # iCloud Mail.  Neither code is about the address: in our corpus, when
+    # iCloud Mail.  Neither code is about the address: in the corpus, when
     # the same address was mailed again later, 74% of CS01 and 68% of HM08
     # bounces were delivered.  HM07/HM08 behave like a throttle.
     R(T_TOKEN, r'\[CS01\]', 'policy_violation',
@@ -406,13 +404,17 @@ RULES = [
     R(T_ESC, r'\b5\.7\.703\b', 'policy_violation',
       "your own tenant's block list stops this recipient"),
     R(T_ESC, r'\b5\.7\.7[01][0-9]\b', 'bad_reputation',
-      'Microsoft: sending tenant or IP blocked'),
+      'Microsoft: sending tenant or IP blocked (code not documented)'),
     R(T_ESC, r'\b5\.7\.(?:50[123]|511|800)\b|\b5\.7\.6[0-4][0-9]\b',
       'blocked', 'Microsoft banned the sender or its IP for spam'),
     R(T_ESC, r'\b5\.7\.50[45]\b', 'user_unknown',
       'Microsoft: the recipient address is not valid'),
     R(T_ESC, r'\b5\.7\.(?:507|513)\b', 'blocked',
       "the recipient's organisation blocks your sending IP"),
+    R(T_ESC, r'\b[45]\.7\.32[1-5]\b', 'crypto_error',
+      'Exchange: TLS, DANE or DNSSEC check failed at the receiver'),
+    R(T_ESC, r'\b5\.7\.23[236]\b', 'throttled',
+      'Microsoft: your tenant hit its daily limit for outside recipients'),
     R(T_ESC, r'\b5\.7\.508\b', 'rate_limited',
       'Microsoft: your IP range exceeded its limits'),
     R(T_ESC, r'\b5\.7\.509\b', 'auth_failure',
@@ -429,7 +431,7 @@ RULES = [
     R(T_ESC, r'\b5\.4\.1\b', 'user_unknown',
       'Microsoft: no such recipient, or the domain is not hosted there'),
     # RFC 7372 numbers the authentication failures and RFC 7505 the null
-    # MX.  Gmail uses them as registered.
+    # MX.
     R(T_ESC, r'\b5\.7\.2[0-46]\b', 'auth_failure',
       'DKIM or SPF did not pass'),
     R(T_ESC, r'\b5\.7\.25\b', 'require_ptr',
@@ -440,9 +442,16 @@ RULES = [
       'Gmail: unusual rate or unsolicited-mail pattern'),
     R(T_ESC, r'\b5\.7\.29\b', 'auth_failure', 'ARC validation failed'),
     R(T_ESC, r'\b[45]\.7\.30\b', 'crypto_error', 'REQUIRETLS not supported'),
-    # 5.1.10 is "recipient has a null MX" in RFC 7505 and "recipient not
-    # found" at Microsoft.  The address is dead either way.
-    R(T_ESC, r'\b5\.1\.(?:[0-36]|10)\b', 'user_unknown',
+    # RFC 3463 calls 5.1.3 bad address syntax, but Gmail sends it with "the
+    # email account does not exist".  5.1.10 is "recipient has a null MX" in
+    # RFC 7505 and "recipient not found" at Microsoft.  Dead either way.
+    R(T_ESC, r'\b5\.1\.4\b', 'ambiguous_address',
+      'address matches several mailboxes'),
+    R(T_ESC, r'\b5\.1\.2\b', 'host_unknown',
+      "the recipient's domain could not be found"),
+    R(T_ESC, r'\b5\.1\.6\b', 'has_moved',
+      'the mailbox has moved and left no forwarding address'),
+    R(T_ESC, r'\b5\.1\.(?:[13]|10)\b', 'user_unknown',
       'address does not exist'),
     R(T_ESC, r'\b5\.2\.2\b', 'mailbox_full',
       'over quota - permanent code, but mailboxes do get emptied'),
@@ -450,21 +459,23 @@ RULES = [
     R(T_ESC, r'\b5\.3\.4\b', 'email_too_large',
       'message above the size limit'),
     R(T_ESC, r'\b4\.2\.2\b', 'mailbox_full', 'mailbox over quota, temporary'),
-    R(T_ESC, r'\b4\.4\.[17]\b', 'expired', 'delivery attempts timed out'),
+    R(T_ESC, r'\b[45]\.4\.7\b', 'expired', 'delivery attempts timed out'),
+    R(T_ESC, r'\b4\.4\.1\b', 'network_error',
+      'no answer from the receiving server'),
+    R(T_ESC, r'\b[45]\.4\.3\b', 'system_error',
+      "the receiver's directory server failed"),
     R(T_ESC, r'\b4\.3\.\d+\b', 'system_error', 'receiving system problem'),
     # RFC 4954 registers 5.7.9 as "authentication mechanism is too weak",
     # but Yahoo uses it for its own policy refusals and that is what turns
     # up in practice.
     R(T_ESC, r'\b5\.7\.9\b', 'policy_violation',
-      'Yahoo: refused on policy, usually DMARC or content'),
+      'Yahoo: refused on policy grounds'),
     R(T_ESC, r'\b[45]\.7\.2\b', 'list_expansion',
       'the receiver refuses to expand this list'),
     R(T_ESC, r'\b[45]\.7\.0\b', 'policy_violation',
       'refused on security policy'),
-    R(T_ESC, r'\b[45]\.7\.[4-7]\b', 'crypto_error', 'TLS or signing failure'),
+    R(T_ESC, r'\b[45]\.7\.[3-7]\b', 'crypto_error', 'TLS or signing failure'),
     # X.1.x, the address family.
-    R(T_ESC, r'\b5\.1\.4\b', 'ambiguous_address',
-      'address matches several mailboxes'),
     R(T_ESC, r'\b[45]\.1\.[78]\b', 'sender_address_bad',
       'your return address or its domain is the problem'),
     # X.2.x, the mailbox family.
@@ -472,6 +483,12 @@ RULES = [
       "over the receiver's size limit"),
     R(T_ESC, r'\b[45]\.2\.4\b', 'list_expansion',
       'mailing list expansion problem'),
+    # X.3.x, the mail system family.  X.3.0 means "other or undefined" and
+    # sits with the generic signals below.
+    R(T_ESC, r'\b[45]\.3\.[125]\b', 'system_error',
+      'the receiving mail system cannot take mail'),
+    R(T_ESC, r'\b[45]\.3\.3\b', 'media_error',
+      'the receiver lacks a feature this message needs'),
     # X.4.x, the network family.
     R(T_ESC, r'\b[45]\.4\.6\b', 'mail_loop', 'routing loop detected'),
     R(T_ESC, r'\b[45]\.4\.4\b', 'host_unknown', 'no route to the destination'),
@@ -489,7 +506,8 @@ RULES = [
     # Phrases.  Order matters within the tier: the first rule to match the
     # remote half wins, so narrow phrases go above the broad ones.
     R(T_TEXT, r'over quota|quota exceeded|out of storage|mailbox (?:is )?full|'
-              r'inode limit|blocks limit exceeded|insufficient system storage',
+              r'inode limit|blocks limit exceeded|insufficient system storage|'
+              r'mailbox has exceeded',
       'mailbox_full', 'the receiver says the mailbox is full'),
     R(T_TEXT, r"domain (?:[\w.-]+ )?(?:does not|doesn'?t) exist|"
               r'host unknown|unrouteable domain|no such domain|'
@@ -502,6 +520,8 @@ RULES = [
               r'recipient unrecognized|(?<!sender )invalid address|'
               r'unrouteable address|no mailbox (?:here|by that name)|'
               r'mailbox not found|address (?:could not be found|not found)|'
+              r"user not found|dosn'?t exist|"
+              r'could not resolve address|'
               r"user doesn'?t exist|email address invalid|address is invalid|"
               r'was misspelled|no valid recipients',
       'user_unknown', 'the receiver says there is no such address'),
@@ -519,7 +539,8 @@ RULES = [
               r'considered spam|looks like spam|spam content|'
               r'message (?:is|was) spam|appears to be spam|'
               r'content rejected as spam|judged to be spam|'
-              r'appears to be unsolicited|unacceptable content',
+              r'appears to be unsolicited|unacceptable content|'
+              r'high[- ]probability spam|\bDT:SPM\b',
       'spam_detected', 'a content filter judged the message as spam'),
     R(T_TEXT, r'poor reputation|bad reputation|low reputation|'
               r'reputation of (?:the |a )?domain|sender reputation|'
@@ -549,12 +570,16 @@ RULES = [
       'your sending domain has no MX record'),
     R(T_TEXT, r"sender's policy prohibits", 'auth_failure',
       "your domain's DMARC policy told them to refuse it"),
-    R(T_TEXT, r'refused to accept a connection', 'network_error',
+    R(T_TEXT, r'rejected due to user rules', 'recipient_blocked',
+      "the recipient's own mail rules refused it"),
+    R(T_TEXT, r'refused to accept a connection|'
+              r'delivery temporarily suspended: connect to', 'network_error',
       "the recipient's mail server refused every connection"),
     R(T_TEXT, r'your access to [^.]{0,40}?(?:e-?mail )?system'
               r'[^.]{0,30}?(?:rejected|denied)|'
               r'sender (?:email )?address rejected|sender rejected|'
-              r'blocked\b|prohibited|not permitted|refused|banned|'
+              r'blocked\b|block by override|prohibited|not permitted|'
+              r'refused|banned|'
               r'host network not allowed',
       'blocked', 'the receiver refused the sender outright'),
     R(T_TEXT, r'\bspf\b|\bdkim\b|\bdmarc\b|not authenticated|'
@@ -589,6 +614,10 @@ RULES = [
     R(T_GENERIC, r'\b5\.1\.0\b|\baddress rejected\b', 'rejected',
       'address refused without a stated reason'),
     R(T_GENERIC, r'\b4\.7\.\d+\b', 'greylisted', 'temporary policy refusal'),
+    R(T_GENERIC, r'\b5\.3\.0\b', 'system_error',
+      'a mail system problem with no detail'),
+    R(T_GENERIC, r'\b[45]\.2\.0\b', 'rejected',
+      'a mailbox problem with no detail'),
     R(T_GENERIC, r'mailbox unavailable|action not taken|'
                  r'recipient (?:address )?rejected|delivery failed|'
                  r'undeliverable|command rejected|access denied',
@@ -1086,19 +1115,18 @@ def _verdict(stats):
             f'**You are on a blocklist.** {blocked:,} of these bounces '
             f'({pct(blocked):.0f}%) name one outright.',
             '',
-            'Nothing else in this report matters until that is cleared. '
-            'While a listing stands, every provider that consults it is '
-            'refusing you before your copy is ever read, and the domains '
-            'keep aging badly the whole time.']
+            'Clear that first. While the listing stands, every provider that '
+            'checks it refuses your mail before reading it, and the listed '
+            'domains keep losing reputation.']
     elif auth and pct(auth) >= 25:
         lines += [
-            f'**Your authentication is broken, and that is good news.** '
+            f'**Your authentication is broken.** '
             f'{auth:,} bounces ({pct(auth):.0f}%) are SPF, DKIM, DMARC or PTR '
             f'failures.',
             '',
-            'This is the cheapest problem on the list. It is a DNS record, '
-            'not a reputation you have to earn back over weeks. Fix the '
-            'records and these stop the same day.']
+            'This is the cheapest problem on the list: a DNS change, not '
+            'weeks of rebuilding reputation. Fix the records and these '
+            'bounces stop the same day.']
     elif content and pct(content) >= 30:
         lines += [
             f'**The message is the problem, not the sender.** {content:,} '
@@ -1169,8 +1197,8 @@ def _verdict(stats):
             f'**It is split.** {pct(yours):.0f}% is your sending side, '
             f'{pct(theirs):.0f}% is your data.',
             '',
-            'Fix the sending side first. Bad addresses cost you one send '
-            'each; a reputation problem taxes every send you make.']
+            'Fix the sending side first. A bad address costs you one send; '
+            'a reputation problem affects every send you make.']
     lines.append('')
     return lines
 
@@ -1229,8 +1257,8 @@ def _blocklists(stats):
                      + (f' - {url}' if url else ''))
     lines += [
         '',
-        'Every one of these is costing you delivery on every send until it '
-        'is resolved.',
+        'Each listing costs you delivery on every send until it is '
+        'removed.',
         '']
     return lines
 
@@ -1446,7 +1474,8 @@ def print_summary(stats, args, out_path):
     if todo:
         say(paint('    what to do', 'bold'))
         for action, n in todo:
-            say(f'    {action:<15} {n:>8,}  {ACTION_HINTS[action]}')
+            label = action.replace('_', ' ')
+            say(f'    {label:<15} {n:>8,}  {ACTION_HINTS[action]}')
         say('')
     if stats.blocklist:
         named = COMMASPACE.join(f'{name} ({n:,})' for name, n
