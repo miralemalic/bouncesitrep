@@ -285,13 +285,23 @@ R = Rule
 
 RULES = [
     # Vendor tokens.
-    R(T_TOKEN, r'RESOLVER\.ADR\.(?:Ex)?RecipientNotFound|'
+    R(T_TOKEN, r'RESOLVER\.ADR\.(?:Ex)?Recip(?:ient)?NotFound|'
                r'RESOLVER\.ADR\.InvalidInSmtp',
       'user_unknown', 'Exchange could not resolve the address'),
     R(T_TOKEN, r'RESOLVER\.FWD\.NotFound', 'user_unknown',
       'Exchange forwarding target does not exist'),
     R(T_TOKEN, r'STOREDRV\.Deliver.*Missing AD entry|AD Recipient Cache',
       'user_unknown', 'no directory entry for the recipient'),
+    # Directory-based edge blocking: the tenant checked its directory and
+    # the address is not in it.
+    R(T_TOKEN, r'AS\(201806281\)', 'user_unknown',
+      'Microsoft: the recipient is not in the tenant directory'),
+    # Microsoft's NDR reference lists 5.5.0 "mailbox unavailable" as a
+    # hotmail.com or outlook.com address that SMTP lookup could not find.
+    # The S2017062302 tag is the Outlook.com flavour of it.  It used to be
+    # caught by a Barracuda pattern below, which said to pause the domain.
+    R(T_TOKEN, r'mailbox unavailable \(S2017062302\)', 'user_unknown',
+      'Outlook.com: no such mailbox'),
     R(T_TOKEN, r'QuotaExceededException|STOREDRV\.Deliver\.Exception:.*Quota',
       'mailbox_full', 'Exchange reports the mailbox over quota'),
     R(T_TOKEN, r'RESOLVER\.RST\.SenderNotAuthenticatedFor(?:Group|Mailbox)|'
@@ -301,7 +311,7 @@ RULES = [
                r"sender isn'?t (?:a group member|on the recipient)",
       'restricted_recipient', 'recipient only accepts internal senders'),
     R(T_TOKEN, r'delivery will only occur if you click|'
-               r'recipient declines mail from',
+               r'recipient declines mail from|not on the friends list',
       'restricted_recipient', 'recipient uses a challenge-response gate'),
     R(T_TOKEN, r'TRANSPORT\.RULES\.RejectMessage', 'policy_violation',
       'a mail-flow rule on the receiving tenant rejected it'),
@@ -311,19 +321,41 @@ RULES = [
       'receiving tenant only accepts partner connectors'),
     R(T_TOKEN, r'RESOLVER\.RST\.NotAuthorized|RESOLVER\.RST\.AuthRequired',
       'policy_violation', 'sender not authorised for this recipient'),
+    # "The account was blocked for sending too much spam."  This is your
+    # own mailbox, not the recipient's.
+    R(T_TOKEN, r'bad outbound sender', 'bad_reputation',
+      'Microsoft blocked the sending mailbox for spam'),
     R(T_TOKEN, r'ATTR34|hop count exceeded|mail loop', 'mail_loop',
       'the address forwards in a loop'),
     R(T_TOKEN, r'g_deny_country|country is banned', 'geo_blocked',
       "receiver blocks the sending server's country"),
+    # GMX, web.de, mail.com and 1&1 link every rejection to a postmaster
+    # case page, and the case code says why.  r1102 and r1103 mean the
+    # envelope or header From domain is on a Spamhaus list:
+    # https://postmaster.gmx.net/en/case?c=r1102
+    R(T_TOKEN, r'/case\?c=r110[23]\b', 'blocklisted',
+      'GMX/1&1: your From domain is on a Spamhaus list'),
+    R(T_TOKEN, r'/case\?c=r1601\b', 'user_unknown',
+      'GMX/1&1: no such recipient, or disabled for inactivity'),
+    R(T_TOKEN, r'/case\?c=r1503\b', 'mailbox_full', 'GMX/1&1: mailbox full'),
+    # Verizon retired its email-to-text gateways, so a vtext.com address
+    # will never take mail again.  It arrives tagged AUP#MXRT.
+    R(T_TOKEN, r'Decommission of Email to Text', 'host_unknown',
+      'Verizon shut down email-to-text (vtext.com)'),
+    # Spectrum and Cox tag rejections with AUP# codes.  Spectrum's table
+    # of what each number means is only published behind JavaScript.
+    # XXX: once it can be read, split this by code.
     R(T_TOKEN, r'\bAUP#', 'policy_violation',
-      'Comcast acceptable-use policy code'),
+      'ISP acceptable-use rejection (Spectrum, Cox)'),
+    # iCloud Mail.  CS01 comes from its Cloudmark filter and lands on any
+    # cold sender alike, so rotating domains does not help.
+    R(T_TOKEN, r'\[CS01\]', 'policy_violation',
+      'iCloud Mail refused it on policy (CS01)'),
     # Sophos and Open-Xchange gateways emit opaque codes with no prose.
     R(T_TOKEN, r'\bXGEMAIL_\d+', 'blocked',
       'Sophos gateway rejected the message'),
     R(T_TOKEN, r'\bOXSUS\d+_\d+', 'blocked',
       'Open-Xchange gateway rejected the sender'),
-    R(T_TOKEN, r'\bS\d{9,}\b', 'blocked',
-      'Barracuda-style gateway rejection code'),
     # Yahoo and AOL bracket a short code into the text.  TS and TSS are
     # throttles, not refusals, which a 4xx/5xx split alone would lose.
     R(T_TOKEN, r'\[TSS?\d{2}\]|\bTSS0[1-4]\b|\bTS0[1-4]\b', 'throttled',
@@ -342,31 +374,62 @@ RULES = [
       'listed by Sophos XL'),
     R(T_BLOCKLIST, r'spamrl\.com', 'blocklisted', 'listed by SpamRL'),
     R(T_BLOCKLIST, r'spamcop|barracudacentral|uceprotect|sorbs|invaluement|'
-                   r'truncate\.gbudb',
+                   r'truncate\.gbudb|abusix',
       'blocklisted', 'listed by a public DNSBL'),
     R(T_BLOCKLIST, r'listed by dbl|blocked using|block list|blocklist|'
                    r'blacklist|'
                    r'listed (?:on|in|by)\b[^.]{0,40}?(?:rbl|dnsbl|list)',
       'blocklisted', 'the receiver named a blocklist'),
 
-    # Enhanced status codes, RFC 3463 and the vendors' own.
-    R(T_ESC, r'\b5\.7\.(?:70[0-9]|71[0-9]|750)\b', 'bad_reputation',
-      'Microsoft: sending IP reputation too low'),
-    R(T_ESC, r'\b5\.7\.6[0-4][0-9]\b', 'blocked',
-      'Microsoft: tenant or IP policy block'),
-    R(T_ESC, r'\b5\.7\.(?:12[0-9]|13[0-9]|19[0-9]|5[12][0-9])\b',
+    # Enhanced status codes.  Microsoft's own come first, from "Email
+    # nondelivery reports and SMTP errors in Exchange Online" on
+    # learn.microsoft.com, because some reuse numbers from the RFC families
+    # below with a narrower meaning.
+    R(T_ESC, r'\b5\.7\.70[58]\b', 'bad_reputation',
+      'Microsoft banned your sending tenant for suspicious traffic'),
+    R(T_ESC, r'\b5\.7\.750\b', 'bad_reputation',
+      'Microsoft: your tenant is sending from unregistered domains'),
+    R(T_ESC, r'\b5\.7\.703\b', 'policy_violation',
+      "your own tenant's block list stops this recipient"),
+    R(T_ESC, r'\b5\.7\.7[01][0-9]\b', 'bad_reputation',
+      'Microsoft: sending tenant or IP blocked'),
+    R(T_ESC, r'\b5\.7\.(?:50[123]|511|800)\b|\b5\.7\.6[0-4][0-9]\b',
+      'blocked', 'Microsoft banned the sender or its IP for spam'),
+    R(T_ESC, r'\b5\.7\.50[45]\b', 'user_unknown',
+      'Microsoft: the recipient address is not valid'),
+    R(T_ESC, r'\b5\.7\.(?:507|513)\b', 'blocked',
+      "the recipient's organisation blocks your sending IP"),
+    R(T_ESC, r'\b5\.7\.508\b', 'rate_limited',
+      'Microsoft: your IP range exceeded its limits'),
+    R(T_ESC, r'\b5\.7\.509\b', 'auth_failure',
+      'Microsoft: your From domain failed DMARC'),
+    R(T_ESC, r'\b5\.7\.(?:1[23]|12[0-9]|13[0-9]|19[0-9]|52[0-9])\b',
       'restricted_recipient',
       'Microsoft: recipient refuses external or forwarded mail'),
-    R(T_ESC, r'\b5\.7\.26\b', 'auth_failure', 'Gmail: unauthenticated sender'),
-    R(T_ESC, r'\b5\.7\.2[0-5]\b', 'require_ptr',
-      'Gmail: PTR or authentication problem'),
-    R(T_ESC, r'\b[45]\.7\.2[89]\b', 'rate_limited',
+    R(T_ESC, r'\b5\.5\.0\b[^.]{0,60}mailbox unavailable', 'user_unknown',
+      'Outlook.com: no such mailbox'),
+    R(T_ESC, r'\b[45]\.4\.31[01]\b', 'host_unknown',
+      "Exchange: the recipient domain's DNS is missing or broken"),
+    R(T_ESC, r'\b[45]\.4\.31[2-8]\b', 'network_error',
+      "Exchange could not connect to the recipient's mail server"),
+    R(T_ESC, r'\b5\.4\.1\b', 'user_unknown',
+      'Microsoft: no such recipient, or the domain is not hosted there'),
+    # RFC 7372 numbers the authentication failures and RFC 7505 the null
+    # MX.  Gmail uses them as registered.
+    R(T_ESC, r'\b5\.7\.2[0-46]\b', 'auth_failure',
+      'DKIM or SPF did not pass'),
+    R(T_ESC, r'\b5\.7\.25\b', 'require_ptr',
+      'no reverse DNS for the sending IP'),
+    R(T_ESC, r'\b5\.7\.27\b', 'sender_address_bad',
+      'your sending domain publishes a null MX'),
+    R(T_ESC, r'\b[45]\.7\.28\b', 'rate_limited',
       'Gmail: unusual rate or unsolicited-mail pattern'),
-    R(T_ESC, r'\b[45]\.7\.30\b', 'rate_limited', 'receiver rate limit'),
+    R(T_ESC, r'\b5\.7\.29\b', 'auth_failure', 'ARC validation failed'),
+    R(T_ESC, r'\b[45]\.7\.30\b', 'crypto_error', 'REQUIRETLS not supported'),
+    # 5.1.10 is "recipient has a null MX" in RFC 7505 and "recipient not
+    # found" at Microsoft.  The address is dead either way.
     R(T_ESC, r'\b5\.1\.(?:[0-36]|10)\b', 'user_unknown',
       'address does not exist'),
-    R(T_ESC, r'\b5\.4\.1\b', 'user_unknown',
-      'no route to the recipient address'),
     R(T_ESC, r'\b5\.2\.2\b', 'mailbox_full',
       'over quota - permanent code, but mailboxes do get emptied'),
     R(T_ESC, r'\b5\.2\.1\b', 'suspended', 'mailbox disabled'),
@@ -375,7 +438,9 @@ RULES = [
     R(T_ESC, r'\b4\.2\.2\b', 'mailbox_full', 'mailbox over quota, temporary'),
     R(T_ESC, r'\b4\.4\.[17]\b', 'expired', 'delivery attempts timed out'),
     R(T_ESC, r'\b4\.3\.\d+\b', 'system_error', 'receiving system problem'),
-    # Yahoo's own policy refusal.  Sender side, and not the same as 5.7.1.
+    # RFC 4954 registers 5.7.9 as "authentication mechanism is too weak",
+    # but Yahoo uses it for its own policy refusals and that is what turns
+    # up in practice.
     R(T_ESC, r'\b5\.7\.9\b', 'policy_violation',
       'Yahoo: refused on policy, usually DMARC or content'),
     R(T_ESC, r'\b[45]\.7\.2\b', 'list_expansion',
@@ -407,25 +472,29 @@ RULES = [
     R(T_ESC, r'\b[45]\.6\.\d+\b', 'media_error',
       'message format or encoding rejected'),
 
-    # Phrases.
+    # Phrases.  Order matters within the tier: the first rule to match the
+    # remote half wins, so narrow phrases go above the broad ones.
     R(T_TEXT, r'over quota|quota exceeded|out of storage|mailbox (?:is )?full|'
               r'inode limit|blocks limit exceeded|insufficient system storage',
       'mailbox_full', 'the receiver says the mailbox is full'),
-    R(T_TEXT, r'user unknown|unknown recipient|'
-              r'no such (?:user|recipient|mailbox)|'
+    R(T_TEXT, r"domain (?:[\w.-]+ )?(?:does not|doesn'?t) exist|"
+              r'host unknown|unrouteable domain|no such domain|'
+              r'domain not found|dns record is (?:invalid|misconfigured)|'
+              r'unable to find the recipient domain',
+      'host_unknown', 'the domain has no working mail server'),
+    R(T_TEXT, r'user unknown|unknown user|unknown recipient|'
+              r'no such (?:user|recipient|mailbox|person)|'
               r'does not exist|recipient not found|invalid recipient|'
+              r'recipient unrecognized|(?<!sender )invalid address|'
               r'unrouteable address|no mailbox (?:here|by that name)|'
               r'mailbox not found|address (?:could not be found|not found)|'
               r"user doesn'?t exist|email address invalid|address is invalid|"
               r'was misspelled|no valid recipients',
       'user_unknown', 'the receiver says there is no such address'),
-    R(T_TEXT, r"domain (?:does not|doesn'?t) exist|host unknown|"
-              r'unrouteable domain|no such domain|domain not found|'
-              r'dns record is (?:invalid|misconfigured)',
-      'host_unknown', 'the domain has no working mail server'),
     R(T_TEXT, r'mailbox (?:is )?disabled|'
               r'account (?:is )?(?:disabled|suspended|inactive)|'
               r'no longer (?:employed|with|active)|account closed|'
+              r'no longer on (?:the |this )?system|'
               r'disabled recipient|user disabled|cannot receive new mail',
       'suspended', 'the account is switched off'),
     R(T_TEXT, r'has moved|address has changed|forwarding disabled',
@@ -435,21 +504,39 @@ RULES = [
               r'spam message rejected|high probability of spam|'
               r'considered spam|looks like spam|spam content|'
               r'message (?:is|was) spam|appears to be spam|'
-              r'content rejected as spam',
+              r'content rejected as spam|judged to be spam|'
+              r'appears to be unsolicited|unacceptable content',
       'spam_detected', 'a content filter judged the message as spam'),
     R(T_TEXT, r'poor reputation|bad reputation|low reputation|'
               r'reputation of (?:the |a )?domain|sender reputation|'
-              r'suspicious due to',
+              r'reputation too low|suspicious due to|'
+              r'source is flagged as bad|too many complaints',
       'bad_reputation', 'the receiver scored your reputation as too low'),
+    R(T_TEXT, r'location screening|blocked[- ]country|IP-Country|'
+              r'country[- ]region[- ]list',
+      'geo_blocked', "the receiver blocks your server's country"),
     R(T_TEXT, r'administrative prohibition|'
               r'policy (?:restrict|reason|violation)|'
               r'local (?:policy|security policy)|organization policy|'
               r'rejected by policy|delivery requirements|content filter|'
               r'denied due to|mailbox delivery failure policy',
       'policy_violation', 'a policy rule rejected the message'),
-    R(T_TEXT, r'relay(?:ing)? (?:denied|not permitted|access denied)|'
-              r'unable to relay|relay access denied',
+    # A server that asks you to log in before it will take the message is
+    # treating you as a relay, so it isn't the mail host for that address.
+    R(T_TEXT, r'relay(?:ing)? (?:denied|not permitted|access denied|'
+              r'disallowed|is not allowed|not allowed)|'
+              r'unable to relay|relay access denied|not our customer|'
+              r'authentication required to relay|'
+              r'turn on SMTP Authentication|'
+              r'requires authentication when attempting to send to a '
+              r'non-local',
       'no_relaying', 'that server does not accept mail for this address'),
+    R(T_TEXT, r'has no real MX records', 'sender_address_bad',
+      'your sending domain has no MX record'),
+    R(T_TEXT, r"sender's policy prohibits", 'auth_failure',
+      "your domain's DMARC policy told them to refuse it"),
+    R(T_TEXT, r'refused to accept a connection', 'network_error',
+      "the recipient's mail server refused every connection"),
     R(T_TEXT, r'your access to [^.]{0,40}?(?:e-?mail )?system'
               r'[^.]{0,30}?(?:rejected|denied)|'
               r'sender (?:email )?address rejected|sender rejected|'
@@ -479,6 +566,9 @@ RULES = [
               r'network (?:is )?unreachable|no route to host|'
               r'dns (?:error|failure)',
       'network_error', 'could not reach the receiving server'),
+    # Cloudflare Email Routing could not hand the message on.
+    R(T_TEXT, r'Upstream error, please check', 'system_error',
+      "the recipient's forwarding service failed"),
 
     # Signals that say something failed, but not why.
     R(T_GENERIC, r'\b5\.7\.1\b', 'blocked', 'generic policy refusal'),
@@ -504,10 +594,13 @@ arrowcre = re.compile(r'\s*->\s*')
 esccre = re.compile(r'\b([245])\.(\d{1,3})\.(\d{1,3})\b')
 smtpcre = re.compile(r'\b([245]\d\d)\b')
 blocklistcre = re.compile(
-    r'\b((?:[\w-]+\.)*(?:spamhaus\.org|surbl\.org|sophosxl\.(?:com|net)|'
+    r'\b((?:[\w-]+\.)*(?:spamhaus\.(?:org|net)|surbl\.org|'
+    r'sophosxl\.(?:com|net)|abusix\.(?:com|org|zone)|'
     r'spamrl\.com|spamcop\.net|barracudacentral\.org|uceprotect\.net|'
     r'sorbs\.net|dnsbl\.[\w.-]+|rbl\.[\w.-]+))\b', re.IGNORECASE)
 dblcre = re.compile(r'\bDBL\b')
+# GMX names Spamhaus only on the case page its bounce links to.
+gmxlistedcre = re.compile(r'/case\?c=r110[23]\b')
 quotacre = re.compile(r'\b5\.2\.2\b')
 # Gmail says so when an over-quota mailbox has also gone unused.
 inactivecre = re.compile(r'inactive|not been accessed|dormant|abandoned',
@@ -526,6 +619,8 @@ PROVIDERS = [
     ('cloudmark', r'cloudmark'),
     ('yahoo', r'yahoo|yahoodns'),
     ('apple', r'icloud|apple\.com'),
+    ('gmx', r'postmaster\.(?:1und1|gmx|web|mail)\.'),
+    ('spectrum', r'spectrum\.net'),
     ]
 PROVIDERS = [(name, re.compile(pattern, re.IGNORECASE))
              for name, pattern in PROVIDERS]
@@ -544,6 +639,7 @@ OPERATORS = [
     ('sorbs', 'SORBS'),
     ('invaluement', 'Invaluement'),
     ('gbudb', 'GBUdb'),
+    ('abusix', 'Abusix'),
     ]
 OPERATORS = [(re.compile(pattern, re.IGNORECASE), name)
              for pattern, name in OPERATORS]
@@ -555,6 +651,7 @@ BL_URLS = {
     'Barracuda': 'https://www.barracudacentral.org/lookups',
     'UCEPROTECT': 'https://www.uceprotect.net/en/rblcheck.php',
     'SORBS': 'https://www.sorbs.net/lookup.shtml',
+    'Abusix': 'https://lookup.abusix.com/',
     }
 
 
@@ -592,7 +689,7 @@ def find_blocklist(text):
         name = next((op for cre, op in OPERATORS if cre.search(host)), host)
         if name not in names:
             names.append(name)
-    if not names and dblcre.search(text):
+    if not names and (dblcre.search(text) or gmxlistedcre.search(text)):
         names.append('Spamhaus')
     return SEMICOLON.join(names)
 

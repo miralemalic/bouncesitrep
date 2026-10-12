@@ -878,6 +878,188 @@ class TestProviderCodes(unittest.TestCase):
                          'blocklisted')
 
 
+class TestMicrosoftCodes(unittest.TestCase):
+    """Exchange Online's own codes, as its NDR reference defines them."""
+
+    def test_outlook_mailbox_unavailable_is_a_dead_address(self):
+        # This used to match a Barracuda pattern and say pause the domain.
+        result = classify(
+            'Requested action not taken: mailbox unavailable (S2017062302). '
+            '[XX1PEPF0000AB88.namprd03.prod.outlook.com '
+            '2026-08-19T13:57:11.876Z 08DEF98D3E158B5A]')
+        self.assertEqual((result['reason'], result['action']),
+                         ('user_unknown', bc.SUPPRESS))
+
+    def test_hotmail_5_5_0_is_not_a_protocol_error(self):
+        self.assertEqual(
+            reason_of('550 5.5.0 Requested action not taken: mailbox '
+                      'unavailable'),
+            'user_unknown')
+
+    def test_tenant_ban_says_it_is_the_tenant(self):
+        result = classify('5.7.705 Service unavailable. Access denied, '
+                          'tenant has exceeded threshold.')
+        self.assertEqual(result['reason'], 'bad_reputation')
+        self.assertIn('tenant', result['detail'])
+
+    def test_bad_outbound_sender_is_your_own_mailbox(self):
+        result = classify('Access denied, bad outbound sender AS(42004)')
+        self.assertEqual(result['category'], bc.REPUTATION)
+        self.assertNotEqual(result['action'], bc.SUPPRESS)
+
+    def test_refused_connection_is_not_your_fault(self):
+        result = classify(
+            "Your message wasn't delivered. Despite repeated attempts to "
+            "deliver your message, the recipient's email system refused to "
+            'accept a connection from your email system. 5.4.317')
+        self.assertEqual(result['reason'], 'network_error')
+        self.assertNotEqual(result['action'], bc.PAUSE)
+
+    def test_dns_failures_are_the_domain(self):
+        self.assertEqual(
+            reason_of('5.4.310 DNS domain example.com does not exist '
+                      '[Message=InfoDomainNonexistent]'),
+            'host_unknown')
+
+    def test_directory_edge_blocking_means_no_such_recipient(self):
+        self.assertEqual(
+            reason_of('550 5.4.1 Recipient address rejected: Access denied. '
+                      'AS(201806281)'),
+            'user_unknown')
+
+    def test_the_5_7_5xx_range_is_not_all_one_thing(self):
+        for text, reason in (
+                ('5.7.501 Access denied, spam abuse detected', 'blocked'),
+                ('5.7.504 Recipient address rejected: Access denied',
+                 'user_unknown'),
+                ('5.7.509 Access denied, sending domain example.com does not '
+                 'pass DMARC verification', 'auth_failure'),
+                ('5.7.520 Access denied, Your organization does not allow '
+                 'external forwarding', 'restricted_recipient')):
+            with self.subTest(text=text[:20]):
+                self.assertEqual(reason_of(text), reason)
+
+    def test_a_relay_login_prompt_is_not_your_authentication(self):
+        # The server wants you to log in, so it isn't this domain's mail
+        # host.  Changing your SPF record would not help.
+        result = classify(
+            '5.7.368 Remote server returned authentication required to relay '
+            '-> 550 Please turn on SMTP Authentication in your mail client')
+        self.assertEqual(result['reason'], 'no_relaying')
+        self.assertNotEqual(result['action'], bc.FIXAUTH)
+
+
+class TestGmxCases(unittest.TestCase):
+    """GMX, web.de, mail.com and 1&1 link each rejection to a case page whose
+    code says what happened, while the text says only "policy"."""
+
+    WRAPPER = ('5.1.351 Remote server returned unknown recipient or mailbox '
+               'unavailable -> 550 Requested action not taken: mailbox '
+               'unavailable;Reject due to policy restrictions.;For '
+               'explanation visit https://postmaster.gmx.net/en/case?c={}'
+               '&i=ip&v=192.0.2.1&r=abc')
+
+    def test_r1102_is_a_spamhaus_listing(self):
+        result = classify(self.WRAPPER.format('r1102'))
+        self.assertEqual((result['reason'], result['action']),
+                         ('blocklisted', bc.PAUSE))
+        self.assertEqual(result['blocklist'], 'Spamhaus')
+        self.assertEqual(result['rejected_by'], 'gmx')
+
+    def test_r1103_is_a_spamhaus_listing_too(self):
+        self.assertEqual(reason_of(self.WRAPPER.format('r1103')),
+                         'blocklisted')
+
+    def test_r1601_is_a_dead_address(self):
+        self.assertEqual(reason_of(self.WRAPPER.format('r1601')),
+                         'user_unknown')
+
+    def test_r1503_is_a_full_mailbox(self):
+        self.assertEqual(reason_of(self.WRAPPER.format('r1503')),
+                         'mailbox_full')
+
+
+class TestRfc7372(unittest.TestCase):
+    """The authentication codes, numbered as IANA registers them."""
+
+    def test_dkim_and_spf_codes(self):
+        for code in ('5.7.20', '5.7.21', '5.7.22', '5.7.23', '5.7.24',
+                     '5.7.26'):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    category_action(f'550 {code} authentication failure'),
+                    (bc.AUTH, bc.FIXAUTH))
+
+    def test_reverse_dns(self):
+        self.assertEqual(reason_of('550 5.7.25 no PTR'), 'require_ptr')
+
+    def test_null_mx_on_the_sending_domain(self):
+        self.assertEqual(reason_of('550 5.7.27 sender address has null MX'),
+                         'sender_address_bad')
+
+    def test_arc_and_requiretls_are_not_rate_limits(self):
+        self.assertEqual(reason_of('550 5.7.29 ARC validation failure'),
+                         'auth_failure')
+        self.assertEqual(reason_of('550 5.7.30 REQUIRETLS support required'),
+                         'crypto_error')
+
+
+class TestProviderTokens(unittest.TestCase):
+
+    def test_retired_email_to_text_gateway(self):
+        result = classify('Blocked. Decommission of Email to Text Vtext/'
+                          'VZWPix. AUP#MXRT')
+        self.assertEqual((result['reason'], result['category']),
+                         ('host_unknown', bc.DATA))
+
+    def test_aup_codes_are_not_called_comcast(self):
+        result = classify('<a@example.com> sender rejected. Please see '
+                          'https://www.spectrum.net/support/internet for more '
+                          'information. AUP#In-1310')
+        self.assertIn('Spectrum', result['detail'])
+        self.assertEqual(result['rejected_by'], 'spectrum')
+
+    def test_icloud_cs01_is_read_from_the_token(self):
+        result = classify('[CS01] Message rejected due to local policy. '
+                          'Please visit https://support.apple.com/HT204137')
+        self.assertEqual(result['_tier'], bc.T_TOKEN)
+        self.assertEqual(result['rejected_by'], 'apple')
+
+    def test_abusix_is_a_named_blocklist(self):
+        result = classify('Invalid Sender. Your domain has been blacklisted '
+                          'by Abusix (https://lookup.abusix.com/)')
+        self.assertEqual(result['reason'], 'blocklisted')
+        self.assertIn('Abusix', result['blocklist'])
+
+
+class TestNewPhrases(unittest.TestCase):
+
+    def test_examples(self):
+        for text, reason in (
+                ('530 Access denied due to the location screening policy.',
+                 'geo_blocked'),
+                ('Mail from 192.0.2.1 was refused due to the sender IP found '
+                 'in ERS-Blocked-Country-Region-List', 'geo_blocked'),
+                ('This message has been rejected due to content judged to be '
+                 'spam by the internet community IB212', 'spam_detected'),
+                ('554 Remote said: "Reputation too low"', 'bad_reputation'),
+                ('Recipient address rejected: Too many complaints from domain '
+                 'example.com', 'bad_reputation'),
+                ('553 Relaying disallowed', 'no_relaying'),
+                ('554 Failure : This message is being held. You are not on '
+                 'the friends list', 'restricted_recipient'),
+                ('550 No such person at this address', 'user_unknown'),
+                ('550 recipient unrecognized', 'user_unknown'),
+                ("550 Sender's policy prohibits this message: Quarantine",
+                 'auth_failure'),
+                ('example.com has no real MX records. Ask your email '
+                 'administrator to fix this.', 'sender_address_bad'),
+                ('550 We were unable to find the recipient domain.',
+                 'host_unknown')):
+            with self.subTest(text=text[:30]):
+                self.assertEqual(reason_of(text), reason)
+
+
 class TestOutputLocation(FileTestCase):
     """-o governs every output.  A bare filename lands there; a full path is
     still honoured."""
