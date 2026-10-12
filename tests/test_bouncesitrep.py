@@ -1,66 +1,131 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 miralemalic
+# SPDX-License-Identifier: MIT
+
 """Tests for bouncesitrep.
 
     python3 -m unittest discover -s tests -v
 
 Fixtures are real bounce text with the addresses and sending domains swapped
-out. No real address, domain or campaign name appears in this repo.
+out.  No real address, domain or campaign name appears in this repo.
 """
 
-import argparse
-import csv
 import io
 import os
-import shutil
+import csv
 import sys
+import shutil
+import argparse
 import tempfile
 import unittest
+import contextlib
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(
+    0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import bouncesitrep as bc  # noqa: E402
 
 bc.QUIET = True
 
+HEADER = ('email', 'mx', 'last_sent_at', 'bounce_msg')
+SPAMHAUS = '554 5.7.1 blocked using dbl.spamhaus.org'
+DEAD = '550 5.1.1 user unknown'
+
 
 def read(path):
-    with io.open(path, encoding="utf-8") as fh:
-        return fh.read()
+    with open(path, encoding='utf-8') as fp:
+        return fp.read()
 
 
 def read_lines(path):
-    return [l.strip() for l in read(path).splitlines() if l.strip()]
+    return [line.strip() for line in read(path).splitlines() if line.strip()]
 
 
-def cls(text, host=""):
+def classify(text, host=''):
     return bc.classify(text, recipient_host=host)
 
 
-def cat_act(text):
-    r = cls(text)
-    return r["category"], r["action"]
+def reason_of(text):
+    return bc.classify(text)['reason']
 
 
-# ---------------------------------------------------------------- the promise
+def category_action(text):
+    result = bc.classify(text)
+    return result['category'], result['action']
+
+
+def make_args(**kws):
+    defaults = dict(
+        column=None, host_column=None, outdir=None, report=None,
+        suppress_list=None, dump_unknown=None, force=False, quiet=True,
+        all_rows=False, banner=False, no_banner=True)
+    defaults.update(kws)
+    return argparse.Namespace(**defaults)
+
+
+def blanks(count):
+    # Leads that were mailed and never bounced.
+    return [[f'a{i}@example.com', '', '2026-09-01', ''] for i in range(count)]
+
+
+def bounces(count, text=DEAD):
+    return [[f'b{i}@example.com', '', '2026-09-01', text]
+            for i in range(count)]
+
+
+class FileTestCase(unittest.TestCase):
+    """Base class for tests that write an export and run it."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='bouncesitrep-test-')
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def write(self, name, text):
+        path = os.path.join(self.tmp, name)
+        with open(path, 'w', newline='', encoding='utf-8') as fp:
+            fp.write(text)
+        return path
+
+    def write_csv(self, rows, header=HEADER):
+        path = os.path.join(self.tmp, 'in.csv')
+        with open(path, 'w', newline='', encoding='utf-8') as fp:
+            writer = csv.writer(fp, lineterminator='\n')
+            writer.writerow(header)
+            writer.writerows(rows)
+        return path
+
+    def run_csv(self, path, **kws):
+        kws.setdefault('outdir', self.tmp)
+        return bc.run_csv(path, make_args(**kws))
+
+    def report_for(self, rows):
+        report = os.path.join(self.tmp, 'diag.md')
+        self.run_csv(self.write_csv(rows), report=report, force=True)
+        return read(report)
+
+    def output_rows(self, name='in - classified.csv'):
+        path = os.path.join(self.tmp, name)
+        with open(path, newline='', encoding='utf-8') as fp:
+            return list(csv.DictReader(fp))
+
 
 class TestSafetyRails(unittest.TestCase):
-    """These two mistakes cost real money, so they are checked against every
-    entry in the table rather than by example."""
+    """Walk every reason in the table, since these mistakes cost the most."""
 
     def test_never_suppress_a_lead_over_your_own_problem(self):
-        """If YOUR domain got blocked, the recipient is still a good lead.
-        Deleting them would be destroying data over a sending fault."""
-        for reason, (_meaning, category, action) in bc.REASONS.items():
-            if category in (bc.REPUTATION, bc.AUTH, bc.CONTENT):
+        # A blocked sending domain says nothing about the recipient, who is
+        # still a good lead.
+        for reason, (meaning, category, action) in bc.REASONS.items():
+            if category in bc.SENDING_SIDE:
                 self.assertNotEqual(action, bc.SUPPRESS, reason)
 
     def test_transient_never_suppresses(self):
-        for reason, (_m, category, action) in bc.REASONS.items():
+        for reason, (meaning, category, action) in bc.REASONS.items():
             if category == bc.TRANSIENT:
                 self.assertNotEqual(action, bc.SUPPRESS, reason)
 
     def test_data_faults_never_pause_a_sending_domain(self):
-        """A dead address says nothing about your domain's health."""
-        for reason, (_m, category, action) in bc.REASONS.items():
+        # A dead address says nothing about your domain's health.
+        for reason, (meaning, category, action) in bc.REASONS.items():
             if category == bc.DATA:
                 self.assertNotEqual(action, bc.PAUSE, reason)
 
@@ -69,941 +134,823 @@ class TestVocabulary(unittest.TestCase):
 
     def test_every_rule_points_at_a_known_reason(self):
         for rule in bc.RULES:
-            self.assertIn(rule.reason, bc.REASONS, rule.rx.pattern[:40])
+            self.assertIn(rule.reason, bc.REASONS, rule.cre.pattern[:40])
 
     def test_every_reason_has_a_plain_english_meaning(self):
-        for reason, (meaning, _c, _a) in bc.REASONS.items():
+        for reason, (meaning, category, action) in bc.REASONS.items():
             self.assertTrue(meaning and meaning[0].isupper(), reason)
-            self.assertGreater(len(meaning), 15, f"{reason}: meaning too terse")
+            self.assertGreater(len(meaning), 15, reason)
 
     def test_categories_and_actions_are_from_the_fixed_set(self):
-        cats = {bc.DATA, bc.REPUTATION, bc.AUTH, bc.CONTENT, bc.RECIPIENT,
-                bc.TRANSIENT, bc.UNKNOWN}
-        acts = {bc.SUPPRESS, bc.RETRY, bc.RETRY_ONCE, bc.PAUSE, bc.FIXAUTH,
-                bc.REWRITE, bc.REVIEW}
-        for reason, (_m, category, action) in bc.REASONS.items():
-            self.assertIn(category, cats, reason)
-            self.assertIn(action, acts, reason)
+        categories = {'data', 'reputation', 'authentication', 'content',
+                      'recipient', 'transient', 'unknown'}
+        actions = {'suppress', 'retry_later', 'retry_once', 'pause_domain',
+                   'fix_auth', 'rewrite_copy', 'review'}
+        for reason, (meaning, category, action) in bc.REASONS.items():
+            self.assertIn(category, categories, reason)
+            self.assertIn(action, actions, reason)
 
     def test_rules_are_tier_sorted(self):
-        tiers = [r.tier for r in bc.RULES]
+        tiers = [rule.tier for rule in bc.RULES]
         self.assertEqual(tiers, sorted(tiers))
 
     def test_no_duplicate_rule_patterns(self):
         seen = set()
         for rule in bc.RULES:
-            key = (rule.tier, rule.rx.pattern)
+            key = (rule.tier, rule.cre.pattern)
             self.assertNotIn(key, seen)
             seen.add(key)
 
-
-# ------------------------------------------------------------- vendor tokens
 
 class TestVendorTokens(unittest.TestCase):
     """Exchange and the security gateways emit these from code, so they beat
     any English in the same message."""
 
     def test_recipient_not_found(self):
-        self.assertEqual(cat_act("RESOLVER.ADR.RecipientNotFound; Recipient "
-                                 "user@example.com not found"),
-                         (bc.DATA, bc.SUPPRESS))
+        self.assertEqual(
+            category_action('RESOLVER.ADR.RecipientNotFound; Recipient '
+                            'user@example.com not found'),
+            (bc.DATA, bc.SUPPRESS))
 
     def test_quota_exception(self):
-        self.assertEqual(cls("STOREDRV.Deliver.Exception:QuotaExceededException"
-                             )["reason"], "mailbox_full")
+        self.assertEqual(
+            reason_of('STOREDRV.Deliver.Exception:QuotaExceededException'),
+            'mailbox_full')
 
     def test_transport_rule(self):
-        self.assertEqual(cls("TRANSPORT.RULES.RejectMessage")["reason"],
-                         "policy_violation")
+        self.assertEqual(reason_of('TRANSPORT.RULES.RejectMessage'),
+                         'policy_violation')
 
     def test_mail_loop(self):
-        self.assertEqual(cls("Hop count exceeded - possible mail loop ATTR34"
-                             )["reason"], "mail_loop")
+        self.assertEqual(
+            reason_of('Hop count exceeded - possible mail loop ATTR34'),
+            'mail_loop')
 
     def test_sophos_gateway_code(self):
-        self.assertEqual(cls("XGEMAIL_0009 Command rejected")["reason"], "blocked")
+        self.assertEqual(reason_of('XGEMAIL_0009 Command rejected'),
+                         'blocked')
 
     def test_open_xchange_code(self):
-        self.assertEqual(cls("Recipient rejected - OXSUS001_403")["reason"], "blocked")
+        self.assertEqual(reason_of('Recipient rejected - OXSUS001_403'),
+                         'blocked')
 
     def test_token_beats_conflicting_prose(self):
-        r = cls("user unknown STOREDRV.Deliver.Exception:QuotaExceededException")
-        self.assertEqual(r["reason"], "mailbox_full")
-        self.assertEqual(r["_tier"], bc.T_TOKEN)
+        result = classify(
+            'user unknown STOREDRV.Deliver.Exception:QuotaExceededException')
+        self.assertEqual(result['reason'], 'mailbox_full')
+        self.assertEqual(result['_tier'], bc.T_TOKEN)
 
 
 class TestRestrictedRecipient(unittest.TestCase):
     """The address exists and the domain is healthy, but it will never accept
-    outside mail. Not the sender's fault, and retrying is pointless."""
+    outside mail.  Not the sender's fault, and retrying is pointless."""
 
     def test_group_only_accepts_internal(self):
-        self.assertEqual(cat_act("5.7.133 RESOLVER.RST."
-                                 "SenderNotAuthenticatedForGroup"),
-                         (bc.RECIPIENT, bc.SUPPRESS))
+        self.assertEqual(
+            category_action('5.7.133 RESOLVER.RST.'
+                            'SenderNotAuthenticatedForGroup'),
+            (bc.RECIPIENT, bc.SUPPRESS))
 
     def test_external_forwarding_blocked(self):
-        self.assertEqual(cls("5.7.520 Access denied, Your organization does not "
-                             "allow external forwarding")["reason"],
-                         "restricted_recipient")
+        self.assertEqual(
+            reason_of('5.7.520 Access denied, Your organization does not '
+                      'allow external forwarding'),
+            'restricted_recipient')
 
     def test_partner_connector_only(self):
-        self.assertEqual(cls("TenantInboundAttribution; Rejecting. Recipient has "
-                             "a partner connector with RestrictDomainsToIPAddresses"
-                             )["reason"], "restricted_recipient")
+        self.assertEqual(
+            reason_of('TenantInboundAttribution; Rejecting. Recipient has a '
+                      'partner connector with RestrictDomainsToIPAddresses'),
+            'restricted_recipient')
 
     def test_challenge_response_gate(self):
-        self.assertEqual(cls("READ THIS: Delivery will ONLY occur if you click "
-                             "on this link")["reason"], "restricted_recipient")
+        self.assertEqual(
+            reason_of('READ THIS: Delivery will ONLY occur if you click on '
+                      'this link'),
+            'restricted_recipient')
 
     def test_never_pauses_a_domain(self):
-        for t in ("5.7.520 external forwarding",
-                  "5.7.133 RESOLVER.RST.SenderNotAuthenticatedForGroup"):
-            with self.subTest(t=t):
-                self.assertNotEqual(cls(t)["action"], bc.PAUSE)
+        for text in ('5.7.520 external forwarding',
+                     '5.7.133 RESOLVER.RST.SenderNotAuthenticatedForGroup'):
+            with self.subTest(text=text):
+                self.assertNotEqual(classify(text)['action'], bc.PAUSE)
 
-
-# ------------------------------------------------------------- the full mailbox
 
 class TestMailboxFull(unittest.TestCase):
     """A full mailbox that the receiver also calls inactive is an abandoned
     account, not a mailbox that will drain."""
 
     def test_permanent_and_inactive_is_abandoned(self):
-        r = cls("552 5.2.2 The recipient's inbox is out of storage space and "
-                "inactive. Please direct the recipient to OverQuotaPerm")
-        self.assertEqual((r["reason"], r["category"], r["action"]),
-                         ("mailbox_full_abandoned", bc.DATA, bc.SUPPRESS))
+        result = classify(
+            "552 5.2.2 The recipient's inbox is out of storage space and "
+            'inactive. Please direct the recipient to OverQuotaPerm')
+        self.assertEqual(
+            (result['reason'], result['category'], result['action']),
+            ('mailbox_full_abandoned', bc.DATA, bc.SUPPRESS))
 
     def test_temporary_full_is_retried_not_suppressed(self):
-        r = cls("452 4.2.2 The recipient's inbox is out of storage space")
-        self.assertEqual(r["reason"], "mailbox_full")
-        self.assertNotEqual(r["action"], bc.SUPPRESS)
+        result = classify(
+            "452 4.2.2 The recipient's inbox is out of storage space")
+        self.assertEqual(result['reason'], 'mailbox_full')
+        self.assertNotEqual(result['action'], bc.SUPPRESS)
 
     def test_permanent_without_inactivity_is_not_abandoned(self):
-        r = cls("552 5.2.2 Mailbox full")
-        self.assertEqual(r["reason"], "mailbox_full")
+        self.assertEqual(reason_of('552 5.2.2 Mailbox full'), 'mailbox_full')
 
     def test_plain_over_quota_is_not_abandoned(self):
-        self.assertEqual(cls("user is over quota")["reason"], "mailbox_full")
+        self.assertEqual(reason_of('user is over quota'), 'mailbox_full')
 
-
-# ------------------------------------------------------------------ blocklists
 
 class TestBlocklists(unittest.TestCase):
 
     def test_spamhaus(self):
-        r = cls("554 5.7.1 Sender address blocked using dbl.spamhaus.org")
-        self.assertEqual((r["reason"], r["category"], r["action"]),
-                         ("blocklisted", bc.REPUTATION, bc.PAUSE))
-        self.assertEqual(r["blocklist"], "Spamhaus")
+        result = classify(SPAMHAUS)
+        self.assertEqual(
+            (result['reason'], result['category'], result['action']),
+            ('blocklisted', bc.REPUTATION, bc.PAUSE))
+        self.assertEqual(result['blocklist'], 'Spamhaus')
 
     def test_hostnames_roll_up_to_the_operator(self):
-        """uri.cal1 and uri.vir1 are one listing to fix, not two."""
-        r = cls("blocked using uri.cal1.sophosxl.com and uri.vir1.sophosxl.com")
-        self.assertEqual(r["blocklist"], "Sophos XL")
+        # uri.cal1 and uri.vir1 are one listing to fix, not two.
+        result = classify('blocked using uri.cal1.sophosxl.com and '
+                          'uri.vir1.sophosxl.com')
+        self.assertEqual(result['blocklist'], 'Sophos XL')
 
     def test_several_operators_are_all_named(self):
-        r = cls("listed on dbl.spamhaus.org and multi.surbl.org")
-        self.assertIn("Spamhaus", r["blocklist"])
-        self.assertIn("SURBL", r["blocklist"])
+        result = classify('listed on dbl.spamhaus.org and multi.surbl.org')
+        self.assertIn('Spamhaus', result['blocklist'])
+        self.assertIn('SURBL', result['blocklist'])
 
     def test_blocklist_beats_a_status_code(self):
-        r = cls("550 5.1.1 rejected; blocked using dbl.spamhaus.org")
-        self.assertEqual(r["reason"], "blocklisted")
-        self.assertEqual(r["_tier"], bc.T_BLOCKLIST)
+        result = classify('550 5.1.1 rejected; blocked using dbl.spamhaus.org')
+        self.assertEqual(result['reason'], 'blocklisted')
+        self.assertEqual(result['_tier'], bc.T_BLOCKLIST)
 
-
-# ---------------------------------------------------------------- status codes
 
 class TestStatusCodes(unittest.TestCase):
 
     def test_microsoft_ip_reputation(self):
-        self.assertEqual(cat_act("550 5.7.708 Access denied, traffic not "
-                                 "accepted from this IP"),
-                         (bc.REPUTATION, bc.PAUSE))
+        self.assertEqual(
+            category_action('550 5.7.708 Access denied, traffic not '
+                            'accepted from this IP'),
+            (bc.REPUTATION, bc.PAUSE))
 
     def test_gmail_unauthenticated_is_fixable_today(self):
-        self.assertEqual(cat_act("550 5.7.26 Unauthenticated email is not accepted"),
-                         (bc.AUTH, bc.FIXAUTH))
+        self.assertEqual(
+            category_action('550 5.7.26 Unauthenticated email is not '
+                            'accepted'),
+            (bc.AUTH, bc.FIXAUTH))
 
     def test_gmail_rate_pattern(self):
-        self.assertEqual(cls("421 4.7.28 unusual rate of unsolicited mail"
-                             )["reason"], "rate_limited")
+        self.assertEqual(
+            reason_of('421 4.7.28 unusual rate of unsolicited mail'),
+            'rate_limited')
 
     def test_user_unknown_codes(self):
-        for code in ("5.1.1", "5.1.2", "5.1.3", "5.1.10"):
+        for code in ('5.1.1', '5.1.2', '5.1.3', '5.1.10'):
             with self.subTest(code=code):
-                self.assertEqual(cls(f"550 {code} bad destination")["reason"],
-                                 "user_unknown")
+                self.assertEqual(reason_of(f'550 {code} bad destination'),
+                                 'user_unknown')
 
     def test_codes_are_extracted(self):
-        r = cls("550 5.7.708 denied")
-        self.assertEqual((r["smtp_code"], r["status_code"]), ("550", "5.7.708"))
+        result = classify('550 5.7.708 denied')
+        self.assertEqual((result['smtp_code'], result['status_code']),
+                         ('550', '5.7.708'))
 
-
-# ------------------------------------------------------ wrapper / remote split
 
 class TestLayerSplit(unittest.TestCase):
 
     def test_split(self):
-        w, rem = bc.split_layers("5.7.350 detected as spam -> 554 5.7.1 rejected")
-        self.assertTrue(w.startswith("5.7.350"))
-        self.assertTrue(rem.startswith("554"))
+        wrapper, remote = bc.split_layers(
+            '5.7.350 detected as spam -> 554 5.7.1 rejected')
+        self.assertTrue(wrapper.startswith('5.7.350'))
+        self.assertTrue(remote.startswith('554'))
 
     def test_no_arrow_is_all_remote(self):
-        self.assertEqual(bc.split_layers("550 user unknown"), ("", "550 user unknown"))
+        self.assertEqual(bc.split_layers(DEAD), ('', DEAD))
 
     def test_remote_half_wins_over_the_relay_guess(self):
-        r = cls("5.1.351 Remote server returned unknown recipient or mailbox "
-                "unavailable -> 550 Requested action not taken: mailbox "
-                "unavailable;Reject due to policy restrictions.")
-        self.assertEqual(r["reason"], "policy_violation")
+        result = classify(
+            '5.1.351 Remote server returned unknown recipient or mailbox '
+            'unavailable -> 550 Requested action not taken: mailbox '
+            'unavailable;Reject due to policy restrictions.')
+        self.assertEqual(result['reason'], 'policy_violation')
 
     def test_wrapper_used_when_the_remote_says_nothing(self):
-        r = cls("5.7.350 Remote server returned message detected as spam -> "
-                "550 delivery failed")
-        self.assertEqual(r["reason"], "spam_detected")
+        result = classify('5.7.350 Remote server returned message detected '
+                          'as spam -> 550 delivery failed')
+        self.assertEqual(result['reason'], 'spam_detected')
 
     def test_expiry_wrapper_keeps_the_underlying_cause(self):
-        r = cls("5.4.300 Message expired -> 452 4.2.2 The recipient's inbox is "
-                "out of storage space")
-        self.assertEqual(r["reason"], "mailbox_full")
+        result = classify("5.4.300 Message expired -> 452 4.2.2 The "
+                          "recipient's inbox is out of storage space")
+        self.assertEqual(result['reason'], 'mailbox_full')
 
-
-# --------------------------------------------------------------------- phrases
 
 class TestPhrases(unittest.TestCase):
 
     def test_user_unknown_variants(self):
-        for t in ("550 User unknown", "no such user here", "mailbox not found",
-                  "Email address could not be found, or was misspelled",
-                  "Email Address Invalid or Incorrect",
-                  "1 Requested mail action aborted, mailbox not found"):
-            with self.subTest(t=t):
-                self.assertEqual(cls(t)["reason"], "user_unknown")
+        for text in ('550 User unknown', 'no such user here',
+                     'mailbox not found',
+                     'Email address could not be found, or was misspelled',
+                     'Email Address Invalid or Incorrect',
+                     '1 Requested mail action aborted, mailbox not found'):
+            with self.subTest(text=text):
+                self.assertEqual(reason_of(text), 'user_unknown')
 
     def test_reputation_phrases(self):
-        r = cls("554 Your access to this mail system has been rejected due to "
-                "poor reputation of a domain used in message transfer")
-        self.assertEqual(r["reason"], "bad_reputation")
+        result = classify(
+            '554 Your access to this mail system has been rejected due to '
+            'poor reputation of a domain used in message transfer')
+        self.assertEqual(result['reason'], 'bad_reputation')
 
     def test_gmail_low_reputation(self):
-        r = cls("550 5.7.1 Gmail has detected that this message is likely "
-                "suspicious due to the very low reputation of the sending domain")
-        self.assertEqual(r["category"], bc.REPUTATION)
+        result = classify(
+            '550 5.7.1 Gmail has detected that this message is likely '
+            'suspicious due to the very low reputation of the sending domain')
+        self.assertEqual(result['category'], bc.REPUTATION)
 
     def test_spam_phrases(self):
-        for t in ('550 "The mail server detected your message as spam"',
-                  "Message content rejected as Spam",
-                  "Message not accepted as it appears to be spam"):
-            with self.subTest(t=t):
-                self.assertEqual(cls(t)["reason"], "spam_detected")
+        for text in ('550 "The mail server detected your message as spam"',
+                     'Message content rejected as Spam',
+                     'Message not accepted as it appears to be spam'):
+            with self.subTest(text=text):
+                self.assertEqual(reason_of(text), 'spam_detected')
 
     def test_relay_denied_is_a_data_problem(self):
-        self.assertEqual(cat_act("554 5.7.1 <a@example.com>: Relay access denied"),
-                         (bc.DATA, bc.SUPPRESS))
+        self.assertEqual(
+            category_action('554 5.7.1 <a@example.com>: Relay access denied'),
+            (bc.DATA, bc.SUPPRESS))
 
     def test_suspended_variants(self):
-        for t in ("User's mailbox is disabled", "Disabled recipient address",
-                  "user disabled; cannot receive new mail"):
-            with self.subTest(t=t):
-                self.assertEqual(cls(t)["reason"], "suspended")
+        for text in ("User's mailbox is disabled",
+                     'Disabled recipient address',
+                     'user disabled; cannot receive new mail'):
+            with self.subTest(text=text):
+                self.assertEqual(reason_of(text), 'suspended')
 
-
-# ------------------------------------------------------------------ precedence
 
 class TestPrecedence(unittest.TestCase):
 
     def test_generic_code_loses_to_an_explicit_phrase(self):
-        self.assertEqual(cls("554 5.7.1 detected your message as spam")["reason"],
-                         "spam_detected")
+        self.assertEqual(reason_of('554 5.7.1 detected your message as spam'),
+                         'spam_detected')
 
     def test_generic_code_still_catches_a_bare_message(self):
-        r = cls("550 5.7.1 Service unavailable")
-        self.assertEqual(r["reason"], "blocked")
-        self.assertEqual(r["_tier"], bc.T_GENERIC)
+        result = classify('550 5.7.1 Service unavailable')
+        self.assertEqual(result['reason'], 'blocked')
+        self.assertEqual(result['_tier'], bc.T_GENERIC)
 
     def test_bare_access_denied_does_not_pause_a_domain(self):
-        """Exchange returns this for a dead address AND for a tenant block.
-        2% of a production corpus looks like this, so guessing is expensive."""
-        r = cls("Recipient address rejected: Access denied. For more information "
-                "see https://aka.ms/EXOSmtpErrors")
-        self.assertEqual(r["action"], bc.REVIEW)
-        self.assertNotEqual(r["action"], bc.PAUSE)
+        # Exchange returns this for a dead address and for a tenant block
+        # alike.  It is 2% of a production corpus, so a wrong guess is
+        # expensive.
+        result = classify('Recipient address rejected: Access denied. For '
+                          'more information see https://aka.ms/EXOSmtpErrors')
+        self.assertEqual(result['action'], bc.REVIEW)
+        self.assertNotEqual(result['action'], bc.PAUSE)
 
     def test_deterministic(self):
-        t = "5.7.350 detected as spam -> 554 5.7.1 blocked using dbl.spamhaus.org"
-        self.assertEqual(cls(t), cls(t))
+        text = ('5.7.350 detected as spam -> 554 5.7.1 blocked using '
+                'dbl.spamhaus.org')
+        self.assertEqual(classify(text), classify(text))
 
-
-# ---------------------------------------------------------------- confidence
 
 class TestConfidence(unittest.TestCase):
 
     def test_machine_signals_are_high_confidence(self):
-        for t in ("RESOLVER.ADR.RecipientNotFound",
-                  "blocked using dbl.spamhaus.org",
-                  "550 5.7.708 denied"):
-            with self.subTest(t=t):
-                self.assertEqual(cls(t)["confidence"], "high")
+        for text in ('RESOLVER.ADR.RecipientNotFound',
+                     'blocked using dbl.spamhaus.org',
+                     '550 5.7.708 denied'):
+            with self.subTest(text=text):
+                self.assertEqual(classify(text)['confidence'], 'high')
 
     def test_a_phrase_is_medium(self):
-        self.assertEqual(cls("the mailbox is full")["confidence"], "medium")
+        self.assertEqual(classify('the mailbox is full')['confidence'],
+                         'medium')
 
     def test_a_bare_code_is_low(self):
-        self.assertEqual(cls("550 nope")["confidence"], "low")
+        self.assertEqual(classify('550 nope')['confidence'], 'low')
 
     def test_unreadable_has_no_confidence(self):
-        self.assertEqual(cls("qqqq zzzz")["confidence"], "none")
+        self.assertEqual(classify('qqqq zzzz')['confidence'], 'none')
 
-
-# ------------------------------------------------------------------ extraction
 
 class TestExtraction(unittest.TestCase):
 
     def test_provider_fingerprints(self):
-        self.assertEqual(cls("RESOLVER.ADR.RecipientNotFound")["rejected_by"],
-                         "microsoft")
-        self.assertEqual(cls("550 rejected - gsmtp")["rejected_by"], "google")
+        self.assertEqual(
+            classify('RESOLVER.ADR.RecipientNotFound')['rejected_by'],
+            'microsoft')
+        self.assertEqual(classify('550 rejected - gsmtp')['rejected_by'],
+                         'google')
 
     def test_recipient_host_is_carried_through(self):
-        r = cls("550 5.1.1 user unknown", host="GOOGLE_WORKSPACE")
-        self.assertEqual(r["recipient_host"], "GOOGLE_WORKSPACE")
+        result = classify(DEAD, host='GOOGLE_WORKSPACE')
+        self.assertEqual(result['recipient_host'], 'GOOGLE_WORKSPACE')
 
     def test_rejecting_system_and_host_can_differ(self):
-        """A Google-hosted domain behind a third-party filter."""
-        r = cls("550 rejected by proofpoint filter", host="GOOGLE_WORKSPACE")
-        self.assertEqual(r["rejected_by"], "proofpoint")
-        self.assertEqual(r["recipient_host"], "GOOGLE_WORKSPACE")
+        # A Google-hosted domain behind a third-party filter.
+        result = classify('550 rejected by proofpoint filter',
+                          host='GOOGLE_WORKSPACE')
+        self.assertEqual(result['rejected_by'], 'proofpoint')
+        self.assertEqual(result['recipient_host'], 'GOOGLE_WORKSPACE')
 
     def test_empty_and_none(self):
-        for v in ("", None, "   "):
-            with self.subTest(v=v):
-                self.assertEqual(cls(v)["reason"], "empty")
+        for value in ('', None, '   '):
+            with self.subTest(value=value):
+                self.assertEqual(reason_of(value), 'empty')
 
     def test_unreadable_is_admitted_not_guessed(self):
-        r = cls("something entirely unparseable")
-        self.assertEqual((r["reason"], r["action"]), ("unknown", bc.REVIEW))
+        result = classify('something entirely unparseable')
+        self.assertEqual((result['reason'], result['action']),
+                         ('unknown', bc.REVIEW))
 
-
-# ------------------------------------------------------------ column detection
 
 class TestColumnDetection(unittest.TestCase):
-    """Every sequencer invents its own schema, so the bounce column is found by
-    what the values look like, not by hoping for a familiar name."""
+    """Every sequencer invents its own schema, so the bounce column is found
+    by what its values look like, not by hoping for a familiar name."""
+
+    def detect(self, rows):
+        return bc.detect_columns(list(rows[0]), rows)
 
     def test_finds_an_oddly_named_bounce_column(self):
-        rows = [{"id": "1", "who": "a@example.com",
-                 "smtp_response_text": "550 5.1.1 user unknown, address rejected"},
-                {"id": "2", "who": "b@example.com",
-                 "smtp_response_text": "552 5.2.2 mailbox full quota exceeded"}]
-        found = bc.detect_columns(list(rows[0]), rows)
-        self.assertEqual(found["bounce"], "smtp_response_text")
+        rows = [
+            {'id': '1', 'who': 'a@example.com',
+             'smtp_response_text': '550 5.1.1 user unknown, address rejected'},
+            {'id': '2', 'who': 'b@example.com',
+             'smtp_response_text': '552 5.2.2 mailbox full quota exceeded'},
+            ]
+        self.assertEqual(self.detect(rows)['bounce'], 'smtp_response_text')
 
     def test_prefers_bounce_text_over_a_long_unrelated_column(self):
-        rows = [{"notes": "Spoke to them at the conference last year about "
-                          "renewing their annual maintenance contract",
-                 "bounce_msg": "550 5.1.1 user unknown"}] * 5
-        found = bc.detect_columns(list(rows[0]), rows)
-        self.assertEqual(found["bounce"], "bounce_msg")
+        rows = [{'notes': 'Spoke to them at the conference last year about '
+                          'renewing their annual maintenance contract',
+                 'bounce_msg': DEAD}] * 5
+        self.assertEqual(self.detect(rows)['bounce'], 'bounce_msg')
 
     def test_finds_host_column_by_its_values(self):
-        rows = [{"x": "GOOGLE_WORKSPACE", "b": "550 5.1.1 user unknown"},
-                {"x": "MICROSOFT365", "b": "550 mailbox full"}]
-        self.assertEqual(bc.detect_columns(list(rows[0]), rows)["host"], "x")
+        rows = [{'x': 'GOOGLE_WORKSPACE', 'b': DEAD},
+                {'x': 'MICROSOFT365', 'b': '550 mailbox full'}]
+        self.assertEqual(self.detect(rows)['host'], 'x')
 
     def test_finds_email_and_date_columns(self):
-        rows = [{"email": "a@example.com", "last_sent_at": "2026-09-01",
-                 "bounce_msg": "550 5.1.1 user unknown"}] * 3
-        found = bc.detect_columns(list(rows[0]), rows)
-        self.assertEqual(found["email"], "email")
-        self.assertEqual(found["date"], "last_sent_at")
+        rows = [{'email': 'a@example.com', 'last_sent_at': '2026-09-01',
+                 'bounce_msg': DEAD}] * 3
+        found = self.detect(rows)
+        self.assertEqual(found['email'], 'email')
+        self.assertEqual(found['date'], 'last_sent_at')
 
     def test_well_named_column_survives_an_all_blank_sample(self):
-        """On a full lead export most rows never bounced. If the sampled rows
-        happen to contain no bounces at all, the column is still the right
-        one -- failing there would reject a perfectly good export."""
-        rows = [{"email": "a@example.com", "bounce_msg": ""}] * 200
-        found = bc.detect_columns(list(rows[0]), rows)
-        self.assertEqual(found["bounce"], "bounce_msg")
+        # Most rows in a whole-campaign export never bounced, so the sample
+        # can be all blanks.  The column is still the right one.
+        rows = [{'email': 'a@example.com', 'bounce_msg': ''}] * 200
+        self.assertEqual(self.detect(rows)['bounce'], 'bounce_msg')
 
     def test_no_bounce_column_is_reported_not_guessed(self):
-        rows = [{"name": "Ada", "city": "London"}] * 3
-        self.assertIsNone(bc.detect_columns(list(rows[0]), rows)["bounce"])
+        rows = [{'name': 'Ada', 'city': 'London'}] * 3
+        self.assertIsNone(self.detect(rows)['bounce'])
 
 
-# -------------------------------------------------------------------- CSV mode
-
-def _args(**kw):
-    d = dict(column=None, host_column=None, outdir=None, report=None,
-             suppress_list=None, dump_unknown=None, force=False, quiet=True,
-             all_rows=False, banner=False, no_banner=True)
-    d.update(kw)
-    return argparse.Namespace(**d)
-
-
-class TestCsv(unittest.TestCase):
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-
-    def write_csv(self, rows, header=("email", "mx", "last_sent_at", "bounce_msg")):
-        p = os.path.join(self.tmp, "in.csv")
-        with io.open(p, "w", newline="", encoding="utf-8") as fh:
-            w = csv.writer(fh, lineterminator="\n")
-            w.writerow(header)
-            w.writerows(rows)
-        return p
-
-    def out_rows(self):
-        p = os.path.join(self.tmp, "in - classified.csv")
-        with io.open(p, newline="", encoding="utf-8") as fh:
-            return list(csv.DictReader(fh))
+class TestCsv(FileTestCase):
 
     def test_columns_appended_originals_kept(self):
-        p = self.write_csv([["a@example.com", "GOOGLE_WORKSPACE", "2026-09-01",
-                             "550 5.1.1 user unknown"]])
-        self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp)), 0)
-        r = self.out_rows()[0]
-        self.assertEqual(r["bounce_reason"], "user_unknown")
-        self.assertEqual(r["bounce_category"], bc.DATA)
-        self.assertEqual(r["recipient_host"], "GOOGLE_WORKSPACE")
-        self.assertTrue(r["bounce_meaning"])
-        self.assertEqual(r["email"], "a@example.com")
+        path = self.write_csv(
+            [['a@example.com', 'GOOGLE_WORKSPACE', '2026-09-01', DEAD]])
+        self.assertEqual(self.run_csv(path), 0)
+        row = self.output_rows()[0]
+        self.assertEqual(row['bounce_reason'], 'user_unknown')
+        self.assertEqual(row['bounce_category'], bc.DATA)
+        self.assertEqual(row['recipient_host'], 'GOOGLE_WORKSPACE')
+        self.assertTrue(row['bounce_meaning'])
+        self.assertEqual(row['email'], 'a@example.com')
 
     def test_suppression_list_holds_only_dead_addresses(self):
-        p = self.write_csv([
-            ["dead@example.com", "", "2026-09-01", "550 5.1.1 user unknown"],
-            ["good@example.com", "", "2026-09-01",
-             "554 5.7.1 blocked using dbl.spamhaus.org"],   # OUR fault, keep them
-            ["full@example.com", "", "2026-09-01", "452 4.2.2 mailbox full"],
-        ])
-        sl = os.path.join(self.tmp, "sup.txt")
-        bc.run_csv(p, _args(outdir=self.tmp, suppress_list=sl))
-        self.assertEqual(read_lines(sl), ["dead@example.com"])
+        path = self.write_csv([
+            ['dead@example.com', '', '2026-09-01', DEAD],
+            # Our own fault, so this lead stays.
+            ['good@example.com', '', '2026-09-01', SPAMHAUS],
+            ['full@example.com', '', '2026-09-01', '452 4.2.2 mailbox full'],
+            ])
+        dead = os.path.join(self.tmp, 'sup.txt')
+        self.run_csv(path, suppress_list=dead)
+        self.assertEqual(read_lines(dead), ['dead@example.com'])
 
     def test_suppression_list_is_deduplicated(self):
-        p = self.write_csv([["dup@example.com", "", "", "550 5.1.1 user unknown"],
-                            ["DUP@example.com", "", "", "550 5.1.1 user unknown"]])
-        sl = os.path.join(self.tmp, "sup.txt")
-        bc.run_csv(p, _args(outdir=self.tmp, suppress_list=sl))
-        self.assertEqual(len(read_lines(sl)), 1)
+        path = self.write_csv([['dup@example.com', '', '', DEAD],
+                               ['DUP@example.com', '', '', DEAD]])
+        dead = os.path.join(self.tmp, 'sup.txt')
+        self.run_csv(path, suppress_list=dead)
+        self.assertEqual(len(read_lines(dead)), 1)
 
     def test_report_is_written_and_names_the_problem(self):
-        rows = [["a%d@example.com" % i, "GOOGLE_WORKSPACE", "2026-09-0%d" % (i % 9 + 1),
-                 "554 5.7.1 blocked using dbl.spamhaus.org"] for i in range(30)]
-        p = self.write_csv(rows)
-        rp = os.path.join(self.tmp, "diag.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        text = read(rp)
-        self.assertIn("Bounce diagnosis", text)
-        self.assertIn("Spamhaus", text)
-        # a blocklist by name outranks the generic sending-side verdict
-        self.assertIn("You are on a blocklist", text)
+        rows = [[f'a{i}@example.com', 'GOOGLE_WORKSPACE',
+                 f'2026-09-0{i % 9 + 1}', SPAMHAUS] for i in range(30)]
+        text = self.report_for(rows)
+        self.assertIn('Bounce diagnosis', text)
+        self.assertIn('Spamhaus', text)
+        # A named blocklist outranks the generic sending-side verdict.
+        self.assertIn('You are on a blocklist', text)
 
     def test_report_opens_with_the_banner_and_a_live_version(self):
-        rows = [["a%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                for i in range(30)]
-        p = self.write_csv(rows)
-        rp = os.path.join(self.tmp, "diag.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        text = read(rp)
-        self.assertTrue(text.startswith("```"), "banner must be fenced for markdown")
-        self.assertIn("\u2588", text, "reticle should render")
-        self.assertIn("v" + bc.__version__, text, "version tracks the module")
-        self.assertNotIn("{version}", text, "placeholder must be interpolated")
+        text = self.report_for(bounces(30))
+        self.assertTrue(text.startswith('```'),
+                        'banner must be fenced for markdown')
+        self.assertIn('\u2588', text, 'reticle should render')
+        self.assertIn('v' + bc.__version__, text)
+        self.assertNotIn('{version}', text)
 
     def test_banner_fits_a_terminal(self):
-        widest = max(len(l) for l in bc.BANNER.split("\n"))
-        self.assertLessEqual(widest, 80, "banner must not wrap at 80 columns")
+        widest = max(len(line) for line in bc.BANNER.split('\n'))
+        self.assertLessEqual(widest, 80)
 
     def test_report_says_list_problem_when_it_is_one(self):
-        rows = [["a%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                for i in range(30)]
-        p = self.write_csv(rows)
-        rp = os.path.join(self.tmp, "diag.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        self.assertIn("Your list is stale", read(rp))
+        self.assertIn('Your list is stale', self.report_for(bounces(30)))
 
     def test_missing_bounce_column_is_an_error(self):
-        p = self.write_csv([["a@example.com", "", "", ""]],
-                           header=("email", "mx", "last_sent_at", "notes"))
-        self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp)), 1)
+        path = self.write_csv([['a@example.com', '', '', '']],
+                              header=('email', 'mx', 'last_sent_at', 'notes'))
+        self.assertEqual(self.run_csv(path), 1)
 
     def test_existing_output_not_clobbered(self):
-        p = self.write_csv([["a@example.com", "", "", "550 5.1.1 user unknown"]])
-        self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp)), 0)
-        self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp)), 1)
-        self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp, force=True)), 0)
+        path = self.write_csv([['a@example.com', '', '', DEAD]])
+        self.assertEqual(self.run_csv(path), 0)
+        self.assertEqual(self.run_csv(path), 1)
+        self.assertEqual(self.run_csv(path, force=True), 0)
 
     def test_blank_bounce_text_is_not_dumped_as_unknown(self):
-        p = self.write_csv([["a@example.com", "", "", ""],
-                            ["b@example.com", "", "", "qqq zzz"]])
-        d = os.path.join(self.tmp, "u.txt")
-        bc.run_csv(p, _args(outdir=self.tmp, dump_unknown=d))
-        self.assertEqual(read_lines(d), ["qqq zzz"])
+        path = self.write_csv([['a@example.com', '', '', ''],
+                               ['b@example.com', '', '', 'qqq zzz']])
+        dump = os.path.join(self.tmp, 'u.txt')
+        self.run_csv(path, dump_unknown=dump)
+        self.assertEqual(read_lines(dump), ['qqq zzz'])
 
     def test_newline_inside_bounce_text(self):
-        p = self.write_csv([["a@example.com", "", "", "550 5.1.1\nuser unknown"]])
-        bc.run_csv(p, _args(outdir=self.tmp))
-        self.assertEqual(len(self.out_rows()), 1)
+        path = self.write_csv(
+            [['a@example.com', '', '', '550 5.1.1\nuser unknown']])
+        self.run_csv(path)
+        self.assertEqual(len(self.output_rows()), 1)
 
 
-class TestDelimiters(unittest.TestCase):
-    """A file called .csv is not always comma separated. Excel writes
-    semicolons across most of Europe, and reading one as commas gives you a
-    single column named "email;bounce_msg" and an output nobody can use."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-
-    def write(self, name, text):
-        p = os.path.join(self.tmp, name)
-        with io.open(p, "w", newline="", encoding="utf-8") as fh:
-            fh.write(text)
-        return p
+class TestDelimiters(FileTestCase):
+    """A file called .csv is not always comma separated.  Excel writes
+    semicolons across most of Europe, and reading one as commas gives a
+    single column called "email;bounce_msg"."""
 
     def test_sniffs_each_separator(self):
-        for name, sep in (("a.csv", ","), ("b.csv", ";"), ("c.csv", "\t"),
-                          ("d.csv", "|")):
+        for name, sep in (('a.csv', ','), ('b.csv', ';'), ('c.csv', '\t'),
+                          ('d.csv', '|')):
             with self.subTest(sep=repr(sep)):
-                p = self.write(name, sep.join(["email", "bounce_msg"]) + "\n"
-                               + sep.join(["a@example.com", "550 5.1.1 user unknown"])
-                               + "\n")
-                self.assertEqual(bc.sniff_delimiter(p), sep)
+                path = self.write(name,
+                                  sep.join(['email', 'bounce_msg']) + '\n'
+                                  + sep.join(['a@example.com', DEAD]) + '\n')
+                self.assertEqual(bc.sniff_delimiter(path), sep)
 
     def test_tsv_is_tab_separated_by_name(self):
-        p = self.write("x.tsv", "email\tbounce_msg\n")
-        self.assertEqual(bc.sniff_delimiter(p), "\t")
+        path = self.write('x.tsv', 'email\tbounce_msg\n')
+        self.assertEqual(bc.sniff_delimiter(path), '\t')
 
     def test_a_semicolon_file_is_parsed_into_real_columns(self):
-        p = self.write("semi.csv",
-                       "email;bounce_msg\na@example.com;550 5.1.1 user unknown\n")
-        self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp)), 0)
-        with io.open(os.path.join(self.tmp, "semi - classified.csv"),
-                     newline="", encoding="utf-8") as fh:
-            rows = list(csv.DictReader(fh))
-        self.assertEqual(rows[0]["email"], "a@example.com")
-        self.assertEqual(rows[0]["bounce_reason"], "user_unknown")
+        path = self.write('semi.csv',
+                          f'email;bounce_msg\na@example.com;{DEAD}\n')
+        self.assertEqual(self.run_csv(path), 0)
+        row = self.output_rows('semi - classified.csv')[0]
+        self.assertEqual(row['email'], 'a@example.com')
+        self.assertEqual(row['bounce_reason'], 'user_unknown')
 
     def test_a_semicolon_file_can_still_write_a_suppression_list(self):
-        """The old bug: no real email column meant no suppression list."""
-        p = self.write("semi.csv",
-                       "email;bounce_msg\na@example.com;550 5.1.1 user unknown\n")
-        sl = os.path.join(self.tmp, "dead.txt")
-        bc.run_csv(p, _args(outdir=self.tmp, suppress_list=sl))
-        self.assertEqual(read_lines(sl), ["a@example.com"])
+        # The old bug: no real email column meant no suppression list.
+        path = self.write('semi.csv',
+                          f'email;bounce_msg\na@example.com;{DEAD}\n')
+        dead = os.path.join(self.tmp, 'dead.txt')
+        self.run_csv(path, suppress_list=dead)
+        self.assertEqual(read_lines(dead), ['a@example.com'])
 
     def test_an_empty_file_does_not_guess(self):
-        p = self.write("empty.csv", "")
-        self.assertEqual(bc.sniff_delimiter(p), ",")
+        path = self.write('empty.csv', '')
+        self.assertEqual(bc.sniff_delimiter(path), ',')
 
 
 class TestConsole(unittest.TestCase):
-    """Colour and block characters are decoration. They must never be the
-    reason the program fails or the output stops being greppable."""
+    """Decoration must never crash the program or break grep."""
+
+    def setUp(self):
+        self.addCleanup(setattr, bc, 'COLOUR', bc.COLOUR)
+        self.addCleanup(setattr, bc, 'UNICODE', bc.UNICODE)
 
     def test_paint_is_a_no_op_without_colour(self):
-        old = bc.COLOUR
-        try:
-            bc.COLOUR = False
-            self.assertEqual(bc.paint("hello", "red", "bold"), "hello")
-        finally:
-            bc.COLOUR = old
+        bc.COLOUR = False
+        self.assertEqual(bc.paint('hello', 'red', 'bold'), 'hello')
 
     def test_paint_wraps_and_always_resets(self):
-        old = bc.COLOUR
-        try:
-            bc.COLOUR = True
-            got = bc.paint("hello", "red")
-            self.assertIn("hello", got)
-            self.assertTrue(got.endswith("\033[0m"), "must reset or it bleeds")
-        finally:
-            bc.COLOUR = old
+        bc.COLOUR = True
+        painted = bc.paint('hello', 'red')
+        self.assertIn('hello', painted)
+        self.assertTrue(painted.endswith('\033[0m'), 'must reset or it bleeds')
 
     def test_colour_is_off_when_not_a_terminal(self):
-        """Under unittest stdout is captured, so this must be off already."""
+        # unittest captures stdout, so this must be off already.
         self.assertFalse(bc._colour_ok())
 
     def test_banner_has_an_ascii_twin(self):
-        ascii_banner = bc.BANNER_ASCII.format(version="9.9.9")
-        ascii_banner.encode("ascii")            # raises if it is not pure ASCII
-        self.assertIn("9.9.9", ascii_banner)
+        ascii_banner = bc.BANNER_ASCII.format(version='9.9.9')
+        # This raises if it is not pure ASCII.
+        ascii_banner.encode('ascii')
+        self.assertIn('9.9.9', ascii_banner)
 
     def test_banner_picks_a_set_this_console_can_print(self):
-        old = bc.UNICODE
-        try:
-            bc.UNICODE = False
-            bc.banner("1.0.0").encode("ascii")  # must not raise
-            bc.UNICODE = True
-            self.assertIn("\u2588", bc.banner("1.0.0"))
-        finally:
-            bc.UNICODE = old
+        bc.UNICODE = False
+        bc.banner('1.0.0').encode('ascii')
+        bc.UNICODE = True
+        self.assertIn('\u2588', bc.banner('1.0.0'))
 
     def test_both_banners_fit_eighty_columns(self):
-        for b in (bc.BANNER, bc.BANNER_ASCII):
-            widest = max(len(l) for l in b.format(version=bc.__version__).split("\n"))
-            self.assertLessEqual(widest, 80)
+        for mark in (bc.BANNER, bc.BANNER_ASCII):
+            lines = mark.format(version=bc.__version__).split('\n')
+            self.assertLessEqual(max(len(line) for line in lines), 80)
 
 
-class TestVerdicts(unittest.TestCase):
-    """Sending-side covers a Spamhaus listing, a typo in an SPF record and
-    copy that trips filters. Those are three different mornings, so the
-    verdict names which one rather than lumping them together."""
+class TestVerdicts(FileTestCase):
+    """Sending side covers a Spamhaus listing, a broken SPF record and copy
+    that trips filters.  Each needs a different fix, so the verdict names
+    which one it is."""
 
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-
-    def verdict_for(self, message, n=30):
-        p = os.path.join(self.tmp, "in.csv")
-        with io.open(p, "w", newline="", encoding="utf-8") as fh:
-            w = csv.writer(fh, lineterminator="\n")
-            w.writerow(["email", "mx", "last_sent_at", "bounce_msg"])
-            for i in range(n):
-                w.writerow(["a%d@example.com" % i, "", "2026-09-01", message])
-        rp = os.path.join(self.tmp, "d.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp, force=True))
-        return read(rp)
+    def verdict_for(self, message):
+        return self.report_for(bounces(30, message))
 
     def test_blocklist_outranks_everything(self):
-        self.assertIn("You are on a blocklist",
-                      self.verdict_for("554 5.7.1 blocked using dbl.spamhaus.org"))
+        self.assertIn('You are on a blocklist', self.verdict_for(SPAMHAUS))
 
     def test_broken_auth_is_called_the_cheap_problem(self):
-        text = self.verdict_for("550 5.7.26 Unauthenticated email is not accepted")
-        self.assertIn("authentication is broken", text)
-        self.assertIn("cheapest problem", text)
+        text = self.verdict_for(
+            '550 5.7.26 Unauthenticated email is not accepted')
+        self.assertIn('authentication is broken', text)
+        self.assertIn('cheapest problem', text)
 
     def test_content_verdict_points_at_the_copy(self):
         text = self.verdict_for('550 "detected your message as spam"')
-        self.assertIn("message is the problem, not the sender", text)
+        self.assertIn('message is the problem, not the sender', text)
 
     def test_dead_addresses_read_as_a_stale_list(self):
-        text = self.verdict_for("550 5.1.1 The email account does not exist")
-        self.assertIn("list is stale", text)
+        text = self.verdict_for('550 5.1.1 The email account does not exist')
+        self.assertIn('list is stale', text)
 
     def test_abandoned_accounts_get_their_own_verdict(self):
-        text = self.verdict_for("552 5.2.2 out of storage space and inactive")
-        self.assertIn("abandoned accounts", text)
+        text = self.verdict_for('552 5.2.2 out of storage space and inactive')
+        self.assertIn('abandoned accounts', text)
 
     def test_walled_mailboxes_get_their_own_verdict(self):
-        text = self.verdict_for("5.7.133 RESOLVER.RST."
-                                "SenderNotAuthenticatedForGroup")
-        self.assertIn("never reachable", text)
+        text = self.verdict_for(
+            '5.7.133 RESOLVER.RST.SenderNotAuthenticatedForGroup')
+        self.assertIn('never reachable', text)
 
     def test_transient_says_there_may_be_nothing_wrong(self):
-        text = self.verdict_for("451 4.7.1 Greylisted, please try again later")
-        self.assertIn("Mostly temporary", text)
+        text = self.verdict_for(
+            '451 4.7.1 Greylisted, please try again later')
+        self.assertIn('Mostly temporary', text)
 
     def test_unreadable_text_admits_it(self):
-        text = self.verdict_for("qqq zzz nothing here")
-        self.assertIn("No clear signal", text)
+        self.assertIn('No clear signal',
+                      self.verdict_for('qqq zzz nothing here'))
 
     def test_every_verdict_is_a_distinct_sentence(self):
-        """Nine situations should not produce the same paragraph nine times."""
         seen = set()
-        for msg in ("554 5.7.1 blocked using dbl.spamhaus.org",
-                    "550 5.7.26 Unauthenticated email is not accepted",
-                    '550 "detected your message as spam"',
-                    "550 5.1.1 The email account does not exist",
-                    "552 5.2.2 out of storage space and inactive",
-                    "5.7.133 RESOLVER.RST.SenderNotAuthenticatedForGroup",
-                    "451 4.7.1 Greylisted, please try again later",
-                    "qqq zzz nothing here"):
-            with self.subTest(msg=msg[:30]):
-                body = self.verdict_for(msg).split("## Verdict")[1]
-                head = body.split("\n\n")[1]
-                self.assertNotIn(head, seen, "duplicate verdict wording")
+        for message in (SPAMHAUS,
+                        '550 5.7.26 Unauthenticated email is not accepted',
+                        '550 "detected your message as spam"',
+                        '550 5.1.1 The email account does not exist',
+                        '552 5.2.2 out of storage space and inactive',
+                        '5.7.133 RESOLVER.RST.SenderNotAuthenticatedForGroup',
+                        '451 4.7.1 Greylisted, please try again later',
+                        'qqq zzz nothing here'):
+            with self.subTest(message=message[:30]):
+                body = self.verdict_for(message).split('## Verdict')[1]
+                head = body.split('\n\n')[1]
+                self.assertNotIn(head, seen, 'duplicate verdict wording')
                 seen.add(head)
 
 
-class TestEmptyRows(unittest.TestCase):
-    """A lead export contains every lead, and most never bounced. Those rows
-    have no bounce text and are not failures to classify -- counting them as
-    unknown made a healthy run read as a 97% failure."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-
-    def write_csv(self, rows):
-        p = os.path.join(self.tmp, "in.csv")
-        with io.open(p, "w", newline="", encoding="utf-8") as fh:
-            w = csv.writer(fh, lineterminator="\n")
-            w.writerow(["email", "mx", "last_sent_at", "bounce_msg"])
-            w.writerows(rows)
-        return p
+class TestEmptyRows(FileTestCase):
+    """Most leads in an export never bounced.  Their rows have no bounce
+    text, and counting them as unknown made a healthy run read as a 97%
+    failure."""
 
     def test_empty_rows_are_not_counted_as_unknown(self):
-        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(90)]
-        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                 for i in range(10)]
-        p = self.write_csv(rows)
-        rp = os.path.join(self.tmp, "d.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        text = read(rp)
-        # the report counts the 10 real bounces against the 100 leads, and
-        # never reports 100 bounces
-        self.assertIn("10 of 100 leads bounced", text)
-        self.assertNotIn("100 bounces", text)
+        text = self.report_for(blanks(90) + bounces(10))
+        # The 10 real bounces are counted against 100 leads, and the report
+        # never claims 100 bounces.
+        self.assertIn('10 of 100 leads bounced', text)
+        self.assertNotIn('100 bounces', text)
 
     def test_percentages_use_the_bounces_not_the_row_count(self):
-        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(90)]
-        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                 for i in range(10)]
-        p = self.write_csv(rows)
-        rp = os.path.join(self.tmp, "d.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        # 10/10 of the actual bounces are data faults, so it must read 100%
-        self.assertIn("100.0%", read(rp))
+        # All ten real bounces are data faults, so this must read 100%.
+        self.assertIn('100.0%', self.report_for(blanks(90) + bounces(10)))
 
     def test_a_whole_campaign_export_yields_a_bounce_rate(self):
-        """Exporting the whole campaign is the normal way to use this. The
-        rows that never bounced are the denominator, not noise."""
-        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(950)]
-        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                 for i in range(50)]
-        p = self.write_csv(rows)
-        rp = os.path.join(self.tmp, "d.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        text = read(rp)
-        self.assertIn("50 of 1,000 leads bounced (5.0%)", text)
-        self.assertIn("high enough to be doing damage", text)
+        # The rows that never bounced are the denominator, not noise.
+        text = self.report_for(blanks(950) + bounces(50))
+        self.assertIn('50 of 1,000 leads bounced (5.0%)', text)
+        self.assertIn('high enough to be doing damage', text)
 
     def test_a_healthy_rate_is_called_healthy(self):
-        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(995)]
-        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                 for i in range(5)]
-        p = self.write_csv(rows)
-        rp = os.path.join(self.tmp, "d.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        self.assertIn("healthy", read(rp))
+        self.assertIn('healthy', self.report_for(blanks(995) + bounces(5)))
 
     def test_a_bounces_only_export_still_works(self):
-        """No blank rows means no denominator, so it must not claim a rate."""
-        rows = [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                for i in range(20)]
-        p = self.write_csv(rows)
-        rp = os.path.join(self.tmp, "d.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        text = read(rp)
-        self.assertIn("20 bounces analysed", text)
-        self.assertNotIn("leads bounced", text)
+        # No blank rows means no denominator, so it must not claim a rate.
+        text = self.report_for(bounces(20))
+        self.assertIn('20 bounces analysed', text)
+        self.assertNotIn('leads bounced', text)
 
     def test_output_holds_only_the_bounces(self):
-        """The point of the output CSV is the rows you can act on. Carrying
-        the 97% that never bounced makes you scroll past them."""
-        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(90)]
-        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                 for i in range(10)]
-        p = self.write_csv(rows)
-        bc.run_csv(p, _args(outdir=self.tmp))
-        with io.open(os.path.join(self.tmp, "in - classified.csv"),
-                     newline="", encoding="utf-8") as fh:
-            out = list(csv.DictReader(fh))
-        self.assertEqual(len(out), 10)
-        self.assertTrue(all(r["bounce_reason"] != "empty" for r in out))
+        # The output is for acting on, so the rows that never bounced stay
+        # out of it.
+        self.run_csv(self.write_csv(blanks(90) + bounces(10)))
+        rows = self.output_rows()
+        self.assertEqual(len(rows), 10)
+        self.assertTrue(all(row['bounce_reason'] != 'empty' for row in rows))
 
     def test_all_rows_keeps_everything(self):
-        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(90)]
-        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                 for i in range(10)]
-        p = self.write_csv(rows)
-        bc.run_csv(p, _args(outdir=self.tmp, all_rows=True))
-        with io.open(os.path.join(self.tmp, "in - classified.csv"),
-                     newline="", encoding="utf-8") as fh:
-            self.assertEqual(len(list(csv.DictReader(fh))), 100)
+        self.run_csv(self.write_csv(blanks(90) + bounces(10)), all_rows=True)
+        self.assertEqual(len(self.output_rows()), 100)
 
     def test_the_rate_still_counts_every_lead(self):
-        """Dropping blank rows from the output must not change the denominator."""
-        rows = [["a%d@example.com" % i, "", "2026-09-01", ""] for i in range(950)]
-        rows += [["b%d@example.com" % i, "", "2026-09-01", "550 5.1.1 user unknown"]
-                 for i in range(50)]
-        p = self.write_csv(rows)
-        rp = os.path.join(self.tmp, "d.md")
-        bc.run_csv(p, _args(outdir=self.tmp, report=rp))
-        self.assertIn("50 of 1,000 leads bounced", read(rp))
+        # Leaving blank rows out of the output must not change the
+        # denominator.
+        self.assertIn('50 of 1,000 leads bounced',
+                      self.report_for(blanks(950) + bounces(50)))
 
     def test_a_file_of_only_blanks_does_not_crash(self):
-        p = self.write_csv([["a@example.com", "", "", ""] for _ in range(5)])
-        self.assertEqual(bc.run_csv(p, _args(outdir=self.tmp)), 0)
+        path = self.write_csv([['a@example.com', '', '', '']] * 5)
+        self.assertEqual(self.run_csv(path), 0)
 
 
 class TestRfc3463Families(unittest.TestCase):
-    """The RFC defines whole families this originally had holes in. A code the
-    tool does not know falls through to prose, which is a worse guess."""
+    """RFC 3463 defines whole families of codes.  One the tool does not know
+    falls through to prose, which is a worse guess."""
 
     def test_address_family(self):
-        self.assertEqual(cls("550 5.1.4 address ambiguous")["reason"],
-                         "ambiguous_address")
-        for code in ("5.1.7", "5.1.8"):
+        self.assertEqual(reason_of('550 5.1.4 address ambiguous'),
+                         'ambiguous_address')
+        for code in ('5.1.7', '5.1.8'):
             with self.subTest(code=code):
-                r = cls(f"550 {code} bad sender address")
-                self.assertEqual((r["reason"], r["category"]),
-                                 ("sender_address_bad", bc.AUTH))
+                result = classify(f'550 {code} bad sender address')
+                self.assertEqual((result['reason'], result['category']),
+                                 ('sender_address_bad', bc.AUTH))
 
     def test_your_own_return_address_is_your_problem(self):
-        """5.1.7/5.1.8 are about the SENDER, not the recipient. Suppressing
-        the recipient over it would delete a good lead."""
-        r = cls("550 5.1.8 Bad sender's system address")
-        self.assertNotEqual(r["action"], bc.SUPPRESS)
-        self.assertEqual(r["action"], bc.FIXAUTH)
+        # 5.1.7 and 5.1.8 are about the sender, not the recipient.
+        result = classify("550 5.1.8 Bad sender's system address")
+        self.assertNotEqual(result['action'], bc.SUPPRESS)
+        self.assertEqual(result['action'], bc.FIXAUTH)
 
     def test_mailbox_family(self):
-        self.assertEqual(cls("552 5.2.3 message length exceeds limit")["reason"],
-                         "email_too_large")
-        self.assertEqual(cls("550 5.2.4 mailing list expansion problem")["reason"],
-                         "list_expansion")
+        self.assertEqual(reason_of('552 5.2.3 message length exceeds limit'),
+                         'email_too_large')
+        self.assertEqual(
+            reason_of('550 5.2.4 mailing list expansion problem'),
+            'list_expansion')
 
     def test_network_family(self):
-        self.assertEqual(cls("550 5.4.6 routing loop detected")["reason"], "mail_loop")
-        self.assertEqual(cls("550 5.4.4 unable to route")["reason"], "host_unknown")
-        for code in ("4.4.0", "4.4.2", "4.4.5"):
+        self.assertEqual(reason_of('550 5.4.6 routing loop detected'),
+                         'mail_loop')
+        self.assertEqual(reason_of('550 5.4.4 unable to route'),
+                         'host_unknown')
+        for code in ('4.4.0', '4.4.2', '4.4.5'):
             with self.subTest(code=code):
-                self.assertEqual(cls(f"450 {code} network trouble")["category"],
-                                 bc.TRANSIENT)
+                result = classify(f'450 {code} network trouble')
+                self.assertEqual(result['category'], bc.TRANSIENT)
 
     def test_protocol_family(self):
-        self.assertEqual(cls("550 5.5.3 too many recipients")["reason"],
-                         "protocol_error")
-        for code in ("5.5.0", "5.5.1", "5.5.2", "5.5.4"):
+        self.assertEqual(reason_of('550 5.5.3 too many recipients'),
+                         'protocol_error')
+        for code in ('5.5.0', '5.5.1', '5.5.2', '5.5.4'):
             with self.subTest(code=code):
-                self.assertEqual(cls(f"550 {code} protocol trouble")["reason"],
-                                 "protocol_error")
+                self.assertEqual(reason_of(f'550 {code} protocol trouble'),
+                                 'protocol_error')
 
     def test_media_family(self):
-        for code in ("5.6.0", "5.6.1", "5.6.3", "5.6.5"):
+        for code in ('5.6.0', '5.6.1', '5.6.3', '5.6.5'):
             with self.subTest(code=code):
-                r = cls(f"550 {code} conversion problem")
-                self.assertEqual((r["reason"], r["category"]),
-                                 ("media_error", bc.CONTENT))
+                result = classify(f'550 {code} conversion problem')
+                self.assertEqual((result['reason'], result['category']),
+                                 ('media_error', bc.CONTENT))
 
     def test_security_family(self):
-        self.assertEqual(cls("550 5.7.0 security policy")["reason"], "policy_violation")
-        self.assertEqual(cls("550 5.7.2 list expansion prohibited")["reason"],
-                         "list_expansion")
-        for code in ("5.7.4", "5.7.5", "5.7.6", "5.7.7"):
+        self.assertEqual(reason_of('550 5.7.0 security policy'),
+                         'policy_violation')
+        self.assertEqual(reason_of('550 5.7.2 list expansion prohibited'),
+                         'list_expansion')
+        for code in ('5.7.4', '5.7.5', '5.7.6', '5.7.7'):
             with self.subTest(code=code):
-                self.assertEqual(cls(f"550 {code} crypto failure")["reason"],
-                                 "crypto_error")
+                self.assertEqual(reason_of(f'550 {code} crypto failure'),
+                                 'crypto_error')
 
 
 class TestProviderCodes(unittest.TestCase):
-    """Yahoo, AOL and Verizon put short codes in brackets that carry more than
-    the 4xx/5xx class does."""
+    """Yahoo, AOL and Verizon put short codes in brackets that carry more
+    than the 4xx/5xx class does."""
 
     def test_yahoo_policy_refusal(self):
-        r = cls("554 5.7.9 Message not accepted for policy reasons")
-        self.assertEqual((r["reason"], r["category"]),
-                         ("policy_violation", bc.REPUTATION))
+        result = classify('554 5.7.9 Message not accepted for policy reasons')
+        self.assertEqual((result['reason'], result['category']),
+                         ('policy_violation', bc.REPUTATION))
 
     def test_yahoo_throttle_is_temporary_not_a_domain_pause(self):
-        """A TSS deferral means slow down. Pausing the domain over a 4xx would
-        cost sending capacity for a problem that clears on its own."""
-        r = cls("421 4.7.0 [TSS04] Messages temporarily deferred due to "
-                "unexpected volume")
-        self.assertEqual(r["reason"], "throttled")
-        self.assertEqual(r["action"], bc.RETRY)
-        self.assertNotEqual(r["action"], bc.PAUSE)
+        # TSS means slow down.  Pausing a domain over it would throw away
+        # sending capacity for a problem that clears on its own.
+        result = classify('421 4.7.0 [TSS04] Messages temporarily deferred '
+                          'due to unexpected volume')
+        self.assertEqual(result['reason'], 'throttled')
+        self.assertEqual(result['action'], bc.RETRY)
+        self.assertNotEqual(result['action'], bc.PAUSE)
 
     def test_yahoo_ts_codes(self):
-        for code in ("TS01", "TS03", "TSS01", "TSS04"):
+        for code in ('TS01', 'TS03', 'TSS01', 'TSS04'):
             with self.subTest(code=code):
-                self.assertEqual(cls(f"421 4.7.0 {code} deferred")["reason"],
-                                 "throttled")
+                self.assertEqual(reason_of(f'421 4.7.0 {code} deferred'),
+                                 'throttled')
 
     def test_verizon_policy_code(self):
-        self.assertEqual(cls("554 PH01 message rejected")["reason"], "blocked")
+        self.assertEqual(reason_of('554 PH01 message rejected'), 'blocked')
 
     def test_yahoo_blocklist_code(self):
-        self.assertEqual(cls("553 5.7.1 DNSBL:ATTRBL 521 listed")["reason"],
-                         "blocklisted")
+        self.assertEqual(reason_of('553 5.7.1 DNSBL:ATTRBL 521 listed'),
+                         'blocklisted')
 
 
-class TestOutputLocation(unittest.TestCase):
-    """-o should govern all of it. A bare filename lands there; a full path
-    is still honoured."""
+class TestOutputLocation(FileTestCase):
+    """-o governs every output.  A bare filename lands there; a full path is
+    still honoured."""
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
-        self.out = os.path.join(self.tmp, "results")
+        super().setUp()
+        self.out = os.path.join(self.tmp, 'results')
         os.makedirs(self.out)
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
-    def write_csv(self):
-        p = os.path.join(self.tmp, "in.csv")
-        with io.open(p, "w", newline="", encoding="utf-8") as fh:
-            w = csv.writer(fh, lineterminator="\n")
-            w.writerow(["email", "mx", "last_sent_at", "bounce_msg"])
-            w.writerow(["a@example.com", "", "2026-09-01", "550 5.1.1 user unknown"])
-            w.writerow(["b@example.com", "", "2026-09-01", "qqq unreadable zzz"])
-        return p
+    def mixed_export(self):
+        return self.write_csv([
+            ['a@example.com', '', '2026-09-01', DEAD],
+            ['b@example.com', '', '2026-09-01', 'qqq unreadable zzz'],
+            ])
 
     def test_bare_filenames_land_in_the_output_directory(self):
-        p = self.write_csv()
-        bc.run_csv(p, _args(outdir=self.out, report="diag.md",
-                            suppress_list="dead.txt", dump_unknown="miss.txt"))
-        for name in ("in - classified.csv", "diag.md", "dead.txt", "miss.txt"):
+        self.run_csv(self.mixed_export(), outdir=self.out, report='diag.md',
+                     suppress_list='dead.txt', dump_unknown='miss.txt')
+        for name in ('in - classified.csv', 'diag.md', 'dead.txt',
+                     'miss.txt'):
             with self.subTest(name=name):
-                self.assertTrue(os.path.isfile(os.path.join(self.out, name)), name)
+                path = os.path.join(self.out, name)
+                self.assertTrue(os.path.isfile(path), name)
 
     def test_an_explicit_path_is_honoured(self):
-        p = self.write_csv()
-        elsewhere = os.path.join(self.tmp, "elsewhere.txt")
-        bc.run_csv(p, _args(outdir=self.out, suppress_list=elsewhere))
+        elsewhere = os.path.join(self.tmp, 'elsewhere.txt')
+        self.run_csv(self.mixed_export(), outdir=self.out,
+                     suppress_list=elsewhere)
         self.assertTrue(os.path.isfile(elsewhere))
-        self.assertFalse(os.path.isfile(os.path.join(self.out, "elsewhere.txt")))
+        self.assertFalse(
+            os.path.isfile(os.path.join(self.out, 'elsewhere.txt')))
 
     def test_out_path_helper(self):
-        # build the expected value the same way the OS does, or this passes on
-        # POSIX and fails on Windows over a separator
-        base = os.path.join(self.tmp, "out")
-        self.assertEqual(bc._out_path("x.txt", base), os.path.join(base, "x.txt"))
-        absolute = os.path.join(self.tmp, "elsewhere", "x.txt")
+        # Build the expected value the way the OS does, or this passes on
+        # POSIX and fails on Windows over a separator.
+        base = os.path.join(self.tmp, 'out')
+        self.assertEqual(bc._out_path('x.txt', base),
+                         os.path.join(base, 'x.txt'))
+        absolute = os.path.join(self.tmp, 'elsewhere', 'x.txt')
         self.assertEqual(bc._out_path(absolute, base), absolute)
 
 
-class TestPathHandling(unittest.TestCase):
-    """A path that does not exist is a typo. Classifying it as bounce text
-    hides the mistake and sends you looking in the wrong place."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="bouncesitrep-test-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+class TestPathHandling(FileTestCase):
+    """A .csv path that does not exist is a typo, not bounce text."""
 
     def run_main(self, argv):
-        # main() sets the module-level QUIET from its arguments, so put it back
-        # or every test after this one starts printing.
-        import contextlib
-        old_argv, old_quiet = sys.argv, bc.QUIET
-        sys.argv = ["bouncesitrep"] + argv
+        # main() sets QUIET from its arguments, so put it back or every test
+        # after this one starts printing.
+        self.addCleanup(setattr, bc, 'QUIET', bc.QUIET)
+        self.addCleanup(setattr, sys, 'argv', sys.argv)
+        sys.argv = ['bouncesitrep'] + argv
         err = io.StringIO()
-        try:
-            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-                return bc.main(), err.getvalue()
-        finally:
-            sys.argv, bc.QUIET = old_argv, old_quiet
+        with contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(io.StringIO()):
+            return bc.main(), err.getvalue()
 
     def test_missing_csv_is_an_error(self):
-        code, err = self.run_main([os.path.join(self.tmp, "nope.csv")])
+        code, err = self.run_main([os.path.join(self.tmp, 'nope.csv')])
         self.assertEqual(code, 1)
-        self.assertIn("no such file", err)
+        self.assertIn('no such file', err)
 
     def test_a_directory_named_csv_is_an_error(self):
-        d = os.path.join(self.tmp, "adir.csv")
-        os.makedirs(d)
-        code, err = self.run_main([d])
+        path = os.path.join(self.tmp, 'adir.csv')
+        os.makedirs(path)
+        code, err = self.run_main([path])
         self.assertEqual(code, 1)
-        self.assertIn("directory", err)
+        self.assertIn('directory', err)
 
     def test_a_real_message_is_still_classified(self):
-        code, err = self.run_main(["550 5.1.1 user unknown"])
+        code, err = self.run_main([DEAD])
         self.assertEqual(code, 0)
-        self.assertEqual(err, "")
+        self.assertEqual(err, '')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
