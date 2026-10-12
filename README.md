@@ -23,8 +23,7 @@
                    v2.2.0
 ```
 
-A SITREP is a situation report: where you stand, where you are taking losses,
-what to do next. Point this at a bounce export and it writes you one.
+A SITREP is a situation report: where you stand, where you are taking losses, and what to do next. Point this at a campaign export and it writes you one.
 
 ```
 $ bouncesitrep export.csv --report
@@ -367,7 +366,7 @@ If it scores worse on your corpus, that is a real result and I want the sample.
 python3 -m unittest discover -s tests -v
 ```
 
-162 tests, standard library only. Three of them are structural rather than
+165 tests, standard library only. Three of them are structural rather than
 example-based: no sending-side fault may suppress an address, no transient
 fault may suppress, and no data fault may pause a domain. Those are the
 mistakes that cost real money, so they run against every entry in the table

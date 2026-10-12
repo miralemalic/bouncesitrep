@@ -1077,6 +1077,11 @@ CAT_COLOUR = {
     }
 
 
+def counted(n, one, many=None):
+    """Return n and the word that agrees with it: '1 row', '2 rows'."""
+    return f'{n:,} {one if n == 1 else (many or one + "s")}'
+
+
 def _bar(fraction, width=22):
     filled = int(round(fraction * width))
     return '#' * filled + '.' * (width - filled)
@@ -1089,10 +1094,10 @@ def _headline(stats):
         period = f' - {stats.first} to {stats.last}'
     # The rate needs a denominator, which only a whole-campaign export has.
     if not stats.empty:
-        return [f'{total:,} bounces analysed{period}', '']
+        return [f'{counted(total, "bounce")} analysed{period}', '']
     rate = stats.rate
-    lines = [f'**{total:,} of {stats.rows:,} leads bounced ({rate:.1f}%)**'
-             f'{period}', '']
+    lines = [f'**{total:,} of {counted(stats.rows, "lead")} bounced '
+             f'({rate:.1f}%)**{period}', '']
     if rate >= 5:
         lines.append(
             f'A {rate:.1f}% bounce rate is high enough to be doing damage on '
@@ -1134,7 +1139,8 @@ def _verdict(stats):
     if blocked and pct(blocked) >= 25:
         lines += [
             f'**You are on a blocklist.** {blocked:,} of these bounces '
-            f'({pct(blocked):.0f}%) name one outright.',
+            f'({pct(blocked):.0f}%) {"names" if blocked == 1 else "name"} '
+            f'one outright.',
             '',
             'Clear that first. While the listing stands, every provider that '
             'checks it refuses your mail before reading it, and the listed '
@@ -1142,16 +1148,19 @@ def _verdict(stats):
     elif auth and pct(auth) >= 25:
         lines += [
             f'**Your authentication is broken.** '
-            f'{auth:,} bounces ({pct(auth):.0f}%) are SPF, DKIM, DMARC or PTR '
-            f'failures.',
+            f'{counted(auth, "bounce")} ({pct(auth):.0f}%) '
+            + ('is an SPF, DKIM, DMARC or PTR failure.' if auth == 1 else
+               'are SPF, DKIM, DMARC or PTR failures.'),
             '',
             'This is the cheapest problem on the list: a DNS change, not '
             'weeks of rebuilding reputation. Fix the records and these '
             'bounces stop the same day.']
     elif content and pct(content) >= 30:
         lines += [
-            f'**The message is the problem, not the sender.** {content:,} '
-            f'bounces ({pct(content):.0f}%) are filters judging the content.',
+            f'**The message is the problem, not the sender.** '
+            f'{counted(content, "bounce")} ({pct(content):.0f}%) '
+            + ('is a filter judging the content.' if content == 1 else
+               'are filters judging the content.'),
             '',
             'Your domains are being accepted; what you wrote is not. Look at '
             'the links, the attachments and the phrasing before you touch '
@@ -1168,17 +1177,21 @@ def _verdict(stats):
     elif walled and pct(walled) >= 20:
         lines += [
             f'**A lot of these addresses were never reachable.** {walled:,} '
-            f'({pct(walled):.0f}%) are mailboxes that only accept mail from '
-            f'inside their own company.',
+            f'({pct(walled):.0f}%) '
+            + ('is a mailbox that only accepts' if walled == 1 else
+               'are mailboxes that only accept')
+            + ' mail from inside their own company.',
             '',
             'They exist, the domains are healthy, and no amount of warming '
             'will get you in. Suppress them and judge the campaign on what '
             'is left.']
     elif abandoned and pct(abandoned) >= 20:
         lines += [
-            f'**You are mailing abandoned accounts.** {abandoned:,} bounces '
-            f'({pct(abandoned):.0f}%) are mailboxes the provider itself '
-            f'calls full and inactive, or switched off.',
+            f'**You are mailing abandoned accounts.** '
+            f'{counted(abandoned, "bounce")} ({pct(abandoned):.0f}%) '
+            + ('is a mailbox' if abandoned == 1 else 'are mailboxes')
+            + ' the provider itself calls full and inactive, or switched '
+              'off.',
             '',
             'That is a list-age problem rather than a list-quality one. The '
             'addresses were real once. Suppress them, and treat the source '
@@ -1186,8 +1199,10 @@ def _verdict(stats):
     elif dead and pct(dead) >= 40:
         lines += [
             f'**Your list is stale.** {dead:,} of these bounces '
-            f'({pct(dead):.0f}%) are addresses or domains that simply do not '
-            f'exist.',
+            f'({pct(dead):.0f}%) '
+            + ('is an address or domain that simply does not exist.'
+               if dead == 1 else
+               'are addresses or domains that simply do not exist.'),
             '',
             'Sending infrastructure looks healthy. This is a data problem, '
             'and it is the easy kind: suppress them, then work out which '
@@ -1274,7 +1289,7 @@ def _blocklists(stats):
     lines = ['## Blocklists naming you', '']
     for name, n in stats.blocklist.most_common(10):
         url = BL_URLS.get(name)
-        lines.append(f'- **{name}** - {n:,} bounces'
+        lines.append(f'- **{name}** - {counted(n, "bounce")}'
                      + (f' - {url}' if url else ''))
     lines += [
         '',
@@ -1331,8 +1346,8 @@ def _trend(stats):
     else:
         lines.append('Volume is broadly flat across the window.')
     peak = max(by_date, key=lambda day: by_date[day])
-    lines += ['', f'Worst single day: **{peak}** with {by_date[peak]:,} '
-                  f'bounces.', '']
+    lines += ['', f'Worst single day: **{peak}** with '
+                  f'{counted(by_date[peak], "bounce")}.', '']
     return lines
 
 
@@ -1345,28 +1360,38 @@ def _next_steps(stats):
     steps = []
     if stats.blocklist:
         hits = sum(stats.blocklist.values())
-        steps.append(f'**Get delisted.** {hits:,} bounces cite a public '
-                     f'blocklist. Nothing else you change matters while that '
-                     f'stands.')
+        steps.append(f'**Get delisted.** '
+                     f'{counted(hits, "bounce cites", "bounces cite")} a '
+                     f'public blocklist. Nothing else you change matters '
+                     f'while that stands.')
     if category[AUTH]:
-        steps.append(f'**Fix authentication.** {category[AUTH]:,} bounces '
-                     f'are SPF, DKIM, DMARC or PTR failures. This is a DNS '
-                     f'change, not a warming problem - it can be done today.')
+        n = category[AUTH]
+        steps.append(f'**Fix authentication.** {counted(n, "bounce")} '
+                     + ('is an SPF, DKIM, DMARC or PTR failure.' if n == 1
+                        else 'are SPF, DKIM, DMARC or PTR failures.')
+                     + ' This is a DNS change, not a warming problem - it '
+                       'can be done today.')
     if action[PAUSE]:
-        steps.append(f'**Pause the worst domains.** {action[PAUSE]:,} '
-                     f'bounces are receivers refusing your sending identity. '
+        n = action[PAUSE]
+        steps.append(f'**Pause the worst domains.** {counted(n, "bounce")} '
+                     + ('is a receiver' if n == 1 else 'are receivers')
+                     + ' refusing your sending identity. '
                      f'Continuing to send deepens it. Use --pause-list to '
                      f'export the domains.')
     if action[SUPPRESS]:
-        steps.append(f'**Suppress {action[SUPPRESS]:,} addresses** that will '
+        steps.append(f'**Suppress '
+                     f'{counted(action[SUPPRESS], "address", "addresses")}** '
+                     f'that will '
                      f'never accept mail. Use --suppress-list to export '
                      f'them.')
     if category[CONTENT]:
-        steps.append(f'**Rewrite the copy.** {category[CONTENT]:,} bounces '
-                     f'are filters judging the message rather than the '
-                     f'sender.')
+        n = category[CONTENT]
+        steps.append(f'**Rewrite the copy.** {counted(n, "bounce")} '
+                     + ('is a filter' if n == 1 else 'are filters')
+                     + ' judging the message rather than the sender.')
     if stats.unknown:
-        steps.append(f'{stats.unknown:,} bounces could not be read. Use '
+        steps.append(f'{counted(stats.unknown, "bounce")} could not be '
+                     f'read. Use '
                      f'--dump-unknown to see them.')
     lines = ['## Do this first', '']
     lines += [f'{n}. {step}' for n, step in enumerate(steps, 1)]
@@ -1468,7 +1493,8 @@ def print_summary(stats, args, out_path):
     arrow = '\u2192' if UNICODE else '->'
     name = paint(os.path.basename(out_path), 'bold')
     say('')
-    say(f'  {stats.rows:,} rows read  {arrow}  {kept:,} written to {name}')
+    say(f'  {counted(stats.rows, "row")} read  {arrow}  {kept:,} written '
+        f'to {name}')
     if not stats.total:
         say(paint('  nothing in that file looks like a bounce', 'yellow'))
         say('')
@@ -1476,7 +1502,8 @@ def print_summary(stats, args, out_path):
     if stats.empty:
         rate = stats.rate
         tint = 'red' if rate >= 5 else ('yellow' if rate >= 2 else 'green')
-        leads = paint(f'({stats.total:,} of {stats.rows:,} leads)', 'grey')
+        leads = paint(f'({stats.total:,} of {counted(stats.rows, "lead")})',
+                      'grey')
         say(f"  {paint('%.1f%%' % rate, 'bold', tint)} bounce rate  {leads}")
     say('')
     block = '\u2588' if UNICODE else '#'
@@ -1525,7 +1552,8 @@ def _write_extras(stats, args, outdir, base, path, use):
                 addresses.append(address)
         with open(args.suppress_list, 'w', encoding='utf-8') as fp:
             fp.write(NL.join(addresses) + NL)
-        say(f'    {len(addresses):,} addresses -> {args.suppress_list}')
+        say(f'    {counted(len(addresses), "address", "addresses")} -> '
+            f'{args.suppress_list}')
     elif args.suppress_list and not use['email']:
         print('  no email column found, cannot write a suppression list',
               file=sys.stderr)
@@ -1537,7 +1565,8 @@ def _write_extras(stats, args, outdir, base, path, use):
         domains = stats.to_pause()
         with open(args.pause_list, 'w', encoding='utf-8') as fp:
             fp.write(EMPTYSTRING.join(domain + NL for domain in domains))
-        say(f'    {len(domains):,} sending domains -> {args.pause_list}')
+        say(f'    {counted(len(domains), "sending domain")} -> '
+            f'{args.pause_list}')
 
     if args.dump_unknown and stats.unread:
         with open(args.dump_unknown, 'w', encoding='utf-8') as fp:

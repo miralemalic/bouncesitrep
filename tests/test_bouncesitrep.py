@@ -1219,6 +1219,30 @@ class TestReasonsGlossary(unittest.TestCase):
         for reason in bc.REASONS:
             self.assertIn(reason, out.getvalue())
 
+
+class TestCounts(FileTestCase):
+    """One of anything is singular."""
+
+    def test_counted(self):
+        self.assertEqual(bc.counted(1, 'row'), '1 row')
+        self.assertEqual(bc.counted(2, 'row'), '2 rows')
+        self.assertEqual(bc.counted(1200, 'address', 'addresses'),
+                         '1,200 addresses')
+
+    def test_one_row_in_the_terminal(self):
+        path = self.write_csv(bounces(1))
+        self.addCleanup(setattr, bc, 'QUIET', bc.QUIET)
+        bc.QUIET = False
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.run_csv(path, quiet=False)
+        self.assertIn('1 row read', out.getvalue())
+
+    def test_one_bounce_in_the_report(self):
+        text = self.report_for(bounces(1))
+        self.assertIn('1 bounce analysed', text)
+        self.assertIn('Suppress 1 address**', text)
+
 class TestOutputLocation(FileTestCase):
     """-o governs every output.  A bare filename lands there; a full path is
     still honoured."""
