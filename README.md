@@ -2,28 +2,12 @@
 
 [![tests](https://github.com/miralemalic/bouncesitrep/actions/workflows/tests.yml/badge.svg)](https://github.com/miralemalic/bouncesitrep/actions/workflows/tests.yml)
 
-```
-                      │
-                      │
-                      │
-                   ███████
-                 ██   │   ██
-                ██    │    ██
-             ───█─────●─────█───
-                ██    │    ██
-                 ██   │   ██
-                   ███████
-                      │
-                      │
-                      │
-
-    ╔╗ ╔═╗╦ ╦╔╗╔╔═╗╔═╗  ╔═╗╦╔╦╗╦═╗╔═╗╔═╗
-    ╠╩╗║ ║║ ║║║║║  ║╣   ╚═╗║ ║ ╠╦╝║╣ ╠═╝
-    ╚═╝╚═╝╚═╝╝╚╝╚═╝╚═╝  ╚═╝╩ ╩ ╩╚═╚═╝╩
-                   v2.2.0
-```
-
 A SITREP is a situation report: where you stand, where you are taking losses, and what to do next. Point this at a campaign export and it writes you one.
+
+<img src="docs/terminal.png" width="740" alt="bouncesitrep run on an 82,414-lead campaign export: a 5.1% bounce rate, the bounces split by whose problem they are, and what to do about each">
+
+<details>
+<summary>The same output as text</summary>
 
 ```
 $ bouncesitrep export.csv --report
@@ -52,6 +36,8 @@ $ bouncesitrep export.csv --report
 
     diagnosis -> export - diagnosis.md
 ```
+
+</details>
 
 That is a real run on a real campaign export. Colour is used only in a
 terminal; piped output stays plain, so you can grep it.
