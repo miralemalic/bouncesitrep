@@ -1200,9 +1200,9 @@ def _verdict(stats):
         lines += [
             f'**Your list is stale.** {dead:,} of these bounces '
             f'({pct(dead):.0f}%) '
-            + ('is an address or domain that simply does not exist.'
+            + ('is an address or domain that does not exist.'
                if dead == 1 else
-               'are addresses or domains that simply do not exist.'),
+               'are addresses or domains that do not exist.'),
             '',
             'Sending infrastructure looks healthy. This is a data problem, '
             'and it is the easy kind: suppress them, then work out which '
@@ -1369,8 +1369,7 @@ def _next_steps(stats):
         steps.append(f'**Fix authentication.** {counted(n, "bounce")} '
                      + ('is an SPF, DKIM, DMARC or PTR failure.' if n == 1
                         else 'are SPF, DKIM, DMARC or PTR failures.')
-                     + ' This is a DNS change, not a warming problem - it '
-                       'can be done today.')
+                     + ' It is a DNS change and can be done today.')
     if action[PAUSE]:
         n = action[PAUSE]
         steps.append(f'**Pause the worst domains.** {counted(n, "bounce")} '

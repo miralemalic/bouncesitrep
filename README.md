@@ -280,7 +280,7 @@ that.
 Text it cannot read comes back as `unknown`, raw message kept. It does not
 guess.
 
-## Measured, not asserted
+## How well it works
 
 Built against **254,054 real bounces** from live cold email infrastructure:
 eight sending workspaces, 1,482 sending domains and 72,263 recipient domains,
@@ -291,7 +291,7 @@ coverage, all 254,054         99.7%
 held-out workspace            99.4%   (also the worst)
 ```
 
-The worst slice is the number that matters, not the average. I wrote the first
+Watch the lowest figure; an average hides the weak spots. I wrote the first
 rules against one slice of an earlier corpus. They scored 99.2% there and
 **74.5%** on a slice they had never seen. That is overfitting, and the only
 reason I caught it was testing against data the rules were not written from.
