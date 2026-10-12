@@ -422,8 +422,14 @@ RULES = [
     R(T_ESC, r'\b5\.7\.(?:1[23]|12[0-9]|13[0-9]|19[0-9]|52[0-9])\b',
       'restricted_recipient',
       'Microsoft: recipient refuses external or forwarded mail'),
-    R(T_ESC, r'\b5\.5\.0\b[^.]{0,60}mailbox unavailable', 'user_unknown',
-      'Outlook.com: no such mailbox'),
+    # Microsoft documents both of these as a missing recipient, but in the
+    # corpus later sends to the same addresses often arrived (about a third
+    # with "Access denied", 70 of 115 with "mailbox unavailable").  The tag in
+    # AS(201806281) above is the only form that reliably means no mailbox.
+    R(T_ESC, r'\b5\.4\.1 Recipient address rejected: Access denied',
+      'rejected', 'Microsoft: no such recipient, or a block on you'),
+    R(T_ESC, r'\b5\.5\.0\b[^.]{0,60}mailbox unavailable', 'rejected',
+      'Outlook.com: mailbox unavailable, often only for now'),
     R(T_ESC, r'\b[45]\.4\.31[01]\b', 'host_unknown',
       "Exchange: the recipient domain's DNS is missing or broken"),
     R(T_ESC, r'\b[45]\.4\.31[2-8]\b', 'network_error',
@@ -792,6 +798,14 @@ def classify(text, recipient_host=''):
                       'inactive')
 
     meaning, category, action = REASONS[reason]
+    # A rule that only proves the text is ambiguous is not a confident call,
+    # whatever tier it sits in.
+    if not hit:
+        confidence = 'none'
+    elif category == UNKNOWN:
+        confidence = 'low'
+    else:
+        confidence = CONFIDENCE[hit.tier]
     if blocklist:
         first_list = blocklist.split(SEMICOLON)[0]
     else:
@@ -807,7 +821,7 @@ def classify(text, recipient_host=''):
         'smtp_code': smtp.group(1) if smtp else '',
         'status_code': '.'.join(esc.groups()) if esc else '',
         'blocklist': blocklist,
-        'confidence': CONFIDENCE.get(hit.tier, 'none') if hit else 'none',
+        'confidence': confidence,
         'evidence': evidence,
         '_tier': hit.tier if hit else '',
         }

@@ -36,35 +36,35 @@ $ bouncesitrep export.csv --report
 
     content            1,983   46.9%  ###########.............
     reputation           879   20.8%  #####...................
-    data                 735   17.4%  ####....................
-    recipient            454   10.7%  ###.....................
-    unknown              160    3.8%  #.......................
+    data                 684   16.2%  ####....................
+    recipient            456   10.8%  ###.....................
+    unknown              209    4.9%  #.......................
     transient             16    0.4%  #.......................
 
     what to do
-    pause_domain         579  receivers are refusing your sending domains
-    suppress             996  addresses never to mail again
-    rewrite_copy       1,974  filters judged the message itself
-    retry_once           193  full mailboxes - one more try, then give up
-    retry_later          197  temporary - safe to send again later
-    review               288  could not be settled from the text alone
+    pause domain         577  receivers are refusing your sending domains
+    suppress             947  addresses never to mail again
+    rewrite copy       1,974  filters judged the message itself
+    retry once           193  full mailboxes - one more try, then give up
+    retry later          199  temporary - safe to send again later
+    review               337  could not be settled from the text alone
 
     blocklists      Spamhaus (33), Sophos XL (22), SURBL (10), SpamRL (2)
 
     diagnosis -> export - diagnosis.md
 ```
 
-That is a real run on a real campaign export. The bars are coloured in a
-terminal and plain when you pipe it, so the output stays greppable.
+That is a real run on a real campaign export. Colour is used only in a
+terminal; piped output stays plain, so you can grep it.
 
-One file. No dependencies. Python 3.9 or newer.
+A single Python file with no dependencies. Python 3.9 or newer.
 
 ## Hard or soft is the wrong question
 
-Every bounce tool sorts mail into hard and soft. At 9am with four thousand
-overnight bounces in front of you, that is no use: a dead address and a
-blocked domain are both "hard" and they need opposite responses. Delete the
-leads and you have destroyed good data. Keep sending and you burn the domain.
+Most bounce tools sort mail into hard and soft. That split does not tell you
+what to do: a dead address and a blocked domain are both "hard", and they
+need opposite responses. Delete the leads and you lose good data. Keep
+sending and you burn the domain.
 
 The question is whose problem it is.
 
@@ -77,9 +77,9 @@ The question is whose problem it is.
 | `recipient` | their mailbox refuses everyone | suppress, nothing else to do |
 | `transient` | nobody's fault | retry |
 
-Six categories, six different desks. Separating `authentication` from
-`reputation` matters most: one is weeks of warming, the other is a DNS record
-you fix before lunch, and a hard/soft report shows them as the same thing.
+Separating `authentication` from `reputation` matters most. A reputation
+problem takes weeks of warming; an authentication problem is a DNS record you
+can fix the same day. A hard/soft report shows them as the same thing.
 
 ## Install
 
@@ -89,7 +89,7 @@ chmod +x bouncesitrep.py
 mv bouncesitrep.py ~/.local/bin/bouncesitrep
 ```
 
-No pip. No virtualenv.
+Nothing to install with pip.
 
 ## Use
 
@@ -123,7 +123,7 @@ have to scroll through. `--all-rows` keeps everything if you want it.
 
 A sending domain makes the `--pause-list` when receivers refused it on
 reputation at least three times and those refusals are at least half of its
-bounces. Below that, a bad list explains it as well as a burnt domain does.
+bounces. Below that, a bad list is as likely a cause as a burnt domain.
 
 It reads exports from PlusVibe, Instantly, Smartlead or anything else that can
 write a CSV. You do not pass `--column`: it scores every column on what the
@@ -148,7 +148,7 @@ sending". A bounces-only export still works, it just cannot tell you the rate.
 | 3 | the bounce rate is above `--fail-over` |
 
 A bounces-only export has no rate, so `--fail-over` treats it as an error
-rather than a pass. Cron should not be told all is well when nobody checked.
+rather than a pass.
 
 ### One message
 
@@ -167,12 +167,11 @@ $ bouncesitrep "552 5.2.2 inbox is out of storage space and inactive"
   matched     "5.2.2 ... inactive"
 ```
 
-That distinction is worth the tool on its own. A full mailbox is normally worth
-retrying. A full mailbox the receiver also calls *inactive* is an account
-nobody opens, and a quarter of all full-mailbox bounces are that.
+A full mailbox is normally worth retrying. One that the receiver also calls
+*inactive* belongs to an account nobody opens. In the corpus that is a quarter
+of all full-mailbox bounces.
 
-`matched` is the text that decided it, so you can see why without trusting
-the label.
+`matched` shows the text that decided the result.
 
 ### Columns it adds
 
@@ -237,7 +236,8 @@ most trustworthy first:
 
 Two orderings, both needed. **Across tiers**, the better kind of signal wins
 wherever it sits. **Within a tier**, the remote server's words beat the
-relaying server's summary, because half of all bounce text looks like this:
+relaying server's summary. 44% of the bounce text in the corpus looks like
+this:
 
 ```
 5.1.351 Remote server returned unknown recipient or mailbox unavailable
@@ -261,16 +261,16 @@ next to the rule in the code:
 - GMX, web.de, mail.com and 1&1: the postmaster [case pages](https://postmaster.gmx.net/en/case?c=r1102) their bounces link to
 - Mimecast: its SMTP error code page, which its bounces link to
 
-Where a vendor publishes nothing - Apple's CS01 and HM08, Outlook.com's
-S2017062302 - the call rests on the corpus, and the next section is how.
+Apple's CS01 and HM08 and Outlook.com's S2017062302 are not documented by
+their vendors. Those calls rest on the corpus; the next section explains how.
 
 ## What it refuses to do
 
-**It will not pause a healthy domain on weak evidence.** `Recipient address
-rejected: Access denied` is 2.9% of the corpus. Microsoft documents it as an
-address that does not exist, but when those addresses were mailed again, 3
-sends in 10 arrived. Nothing in the text separates the two cases, so it
-resolves to `review` and says so.
+**It will not act on weak evidence.** `Recipient address rejected: Access
+denied` is 2.9% of the corpus. Microsoft documents it as an address that does
+not exist, but when those addresses were mailed again, about a third of the
+later sends arrived. Nothing in the text separates a dead address from a
+block on you, so it resolves to `review` and says so.
 
 **It will not suppress a lead over your own failure.** If your domain got
 blocked, the recipient is still a good lead. No reason may pair a sending-side
@@ -282,14 +282,13 @@ guess.
 
 ## Measured, not asserted
 
-Built against **254,054 real bounces** from live cold email infrastructure -
-eight sending workspaces on Google Workspace and Microsoft 365, 1,482 sending
-domains, reaching 72,263 recipient domains between June and October 2026.
+Built against **254,054 real bounces** from live cold email infrastructure:
+eight sending workspaces, 1,482 sending domains and 72,263 recipient domains,
+sent between June and October 2026.
 
 ```
-coverage, all 254,054         99.6%
-worst workspace               99.2%
-held-out workspace            99.3%
+coverage, all 254,054         99.7%
+held-out workspace            99.4%   (also the worst)
 ```
 
 The worst slice is the number that matters, not the average. I wrote the first
@@ -298,29 +297,34 @@ rules against one slice of an earlier corpus. They scored 99.2% there and
 reason I caught it was testing against data the rules were not written from.
 
 So one workspace is held out. No rule was written from its bounce text; it is
-only scored. Version 2.1 read 98.8% of it, version 2.2 reads 99.3%.
+only scored. Version 2.1 read 98.8% of it, version 2.2 reads 99.4%.
 
 ### Checked against what happened next
 
-Coverage says a rule matched. It does not say the rule was right, and for the
-calls that delete a lead, right is what matters. So those were checked against
-what happened next: take addresses that bounced, find a later send to the same
-address, and see whether it arrived. A dead address bounces again. A filter
-having a bad day does not.
+Coverage only shows that a rule matched, not that it was right. So the calls
+that delete a lead were also checked against what happened next: take
+addresses that bounced, find a later send to the same address, and see
+whether it arrived. A dead address bounces every time. A filter that refused
+one send often accepts the next.
 
 | bounce | later sends that arrived | so |
 |---|---:|---|
-| `550 5.1.1 user unknown`, the control | 0 of 28 | suppress |
+| `550 5.1.1 user unknown`, the control | 0 of 31 | suppress |
 | Outlook.com `(S2017062302)` | 1 of 34 | suppress |
 | Microsoft "storage full" | 15 of 66 | one more try |
-| `Recipient address rejected: Access denied` | 3 of 10 | review |
+| "refused to accept a connection" | 6 of 19 | retry later |
+| `Recipient address rejected: Access denied` | 3 of 10, 2 of 5 | review |
 | bare `mailbox unavailable.` | 70 of 115 | review |
+| Mimecast "security policies" | 2 of 5 | rewrite the copy |
 | iCloud `[HM08]` | 182 of 268 | retry later |
 | iCloud `[CS01]` | 78 of 106 | not the address |
 
-Microsoft documents a bare "mailbox unavailable" from Outlook.com as an
-address its lookup could not find. 70 of 115 later sends arrived anyway, so
-the corpus overrules the documentation and it stays in review.
+Samples of 1,500 bounced addresses per row. Most bounced addresses are never
+mailed again, so the counts are the ones that were.
+
+Microsoft documents "mailbox unavailable" from Outlook.com (5.5.0) as an
+address its lookup could not find, but 70 of 115 later sends arrived. It goes
+to review, with or without the code.
 
 Check it on your own bounces. The measuring stick ships with the tool:
 
@@ -338,14 +342,12 @@ If it scores worse on your corpus, that is a real result and I want the sample.
   servers, and it is the right tool for that job. This one starts where the API
   hands you a string.
 - English NDRs. Other languages fall through to status codes, which still work.
-- RFC 3463 coverage is complete across the address, mailbox, network, protocol,
-  media and security families, and RFC 7372's authentication codes are read as
-  registered. Provider codes cover Microsoft, Google, Yahoo, AOL, Verizon,
-  Apple iCloud, GMX/web.de/mail.com/1&1, Mimecast, Sophos and Open-Xchange.
-  Anything else falls back to matching the prose.
-- Spectrum and Cox `AUP#` codes are read as acceptable-use rejections, not by
-  number. Spectrum publishes what each number means, but only behind
-  JavaScript.
+- Every code in RFC 3463 has a rule, and RFC 7372's authentication codes are
+  read as registered. Vendor codes are read one by one for Microsoft, Yahoo,
+  AOL, Verizon, Apple iCloud, GMX/web.de/mail.com/1&1 and Mimecast. Sophos,
+  Open-Xchange, Spectrum and Cox codes are recognised but not told apart:
+  Spectrum's table of `AUP#` codes only opens in a browser. Anything else
+  falls back to the text.
 - The corpus is cold email, mostly to US small business domains, with some
   finance and consumer lists. Transactional or European senders will see
   different proportions, though the rules themselves are not region-specific.
@@ -358,7 +360,7 @@ If it scores worse on your corpus, that is a real result and I want the sample.
 python3 -m unittest discover -s tests -v
 ```
 
-155 tests, standard library only. Three of them are structural rather than
+159 tests, standard library only. Three of them are structural rather than
 example-based: no sending-side fault may suppress an address, no transient
 fault may suppress, and no data fault may pause a domain. Those are the
 mistakes that cost real money, so they run against every entry in the table

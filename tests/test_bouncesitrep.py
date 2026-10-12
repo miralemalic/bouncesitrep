@@ -916,10 +916,18 @@ class TestMicrosoftCodes(unittest.TestCase):
                          ('user_unknown', bc.SUPPRESS))
 
     def test_hotmail_5_5_0_is_not_a_protocol_error(self):
-        self.assertEqual(
-            reason_of('550 5.5.0 Requested action not taken: mailbox '
-                      'unavailable'),
-            'user_unknown')
+        # Later sends to these addresses often arrive, so it is not a dead
+        # address either.
+        result = classify('550 5.5.0 Requested action not taken: mailbox '
+                          'unavailable')
+        self.assertEqual((result['reason'], result['action']),
+                         ('rejected', bc.REVIEW))
+        self.assertEqual(result['confidence'], 'low')
+
+    def test_coded_access_denied_is_still_review(self):
+        result = classify('host x.mail.protection.outlook.com said: 550 '
+                          '5.4.1 Recipient address rejected: Access denied')
+        self.assertEqual(result['action'], bc.REVIEW)
 
     def test_tenant_ban_says_it_is_the_tenant(self):
         result = classify('5.7.705 Service unavailable. Access denied, '
