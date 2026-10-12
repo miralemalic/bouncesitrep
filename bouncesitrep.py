@@ -6,8 +6,9 @@
 
     bouncesitrep export.csv                  find the bounce column itself
     bouncesitrep export.csv --report         write a markdown diagnosis
-    bouncesitrep export.csv --suppress-list dead.txt
+    bouncesitrep export.csv --suppress-list dead.txt --pause-list pause.txt
     bouncesitrep '550 5.1.1 user unknown'    classify one message
+    bouncesitrep --reasons                   every answer it can give
 
 Bounce tools sort mail into hard and soft, which is no help at 9am with four
 thousand overnight bounces to get through.  What you need to know is whose
@@ -703,9 +704,10 @@ def _first_rule(remote, text):
             if not candidate:
                 continue
             for rule in rules:
-                if rule.cre.search(candidate):
-                    return rule
-    return None
+                mo = rule.cre.search(candidate)
+                if mo:
+                    return rule, mo.group(0)
+    return None, ''
 
 
 def classify(text, recipient_host=''):
@@ -714,12 +716,13 @@ def classify(text, recipient_host=''):
     :param text: The bounce text, as the sequencer exported it.
     :param recipient_host: The recipient's mail host, when the export has it.
     :return: A dict keyed by reason, meaning, category, action, detail,
-        rejected_by, recipient_host, smtp_code, status_code, blocklist and
-        confidence, plus `_tier` for the rule that decided.  Never raises.
+        rejected_by, recipient_host, smtp_code, status_code, blocklist,
+        confidence and evidence, the words that decided it, plus `_tier`
+        for the rule that matched.  Never raises.
     """
     text = (text or '').strip()
     esc = smtp = hit = None
-    provider = blocklist = ''
+    provider = blocklist = evidence = ''
     if text:
         wrapper, remote = split_layers(text)
         provider = find_provider(text)
@@ -729,7 +732,7 @@ def classify(text, recipient_host=''):
         esc = (esccre.search(remote) or esccre.search(wrapper)
                or esccre.search(text))
         smtp = smtpcre.search(remote) or smtpcre.search(text)
-        hit = _first_rule(remote, text)
+        hit, evidence = _first_rule(remote, text)
 
     if hit:
         reason, detail = hit.reason, hit.detail
@@ -761,6 +764,7 @@ def classify(text, recipient_host=''):
         'status_code': '.'.join(esc.groups()) if esc else '',
         'blocklist': blocklist,
         'confidence': CONFIDENCE.get(hit.tier, 'none') if hit else 'none',
+        'evidence': evidence,
         '_tier': hit.tier if hit else '',
         }
 
@@ -892,6 +896,7 @@ class Stats:
         self.host_yours = collections.Counter()
         self.by_sender = collections.Counter()
         self.sender_yours = collections.Counter()
+        self.sender_pause = collections.Counter()
         self.by_date = collections.Counter()
         self.date_yours = collections.Counter()
         self.dead = []              # addresses never to mail again
@@ -900,6 +905,17 @@ class Stats:
     @property
     def rate(self):
         return self.total / max(self.rows, 1) * 100
+
+    def to_pause(self):
+        """Return the sending domains to pause, worst first.
+
+        A domain makes the list when receivers refused it on reputation at
+        least three times, and those refusals are at least half its bounces.
+        Below that it is as likely to be a bad list as a burnt domain.
+        """
+        domains = [domain for domain, n in self.sender_pause.items()
+                   if n >= 3 and n * 2 >= self.by_sender[domain]]
+        return sorted(domains, key=lambda d: (-self.sender_pause[d], d))
 
     def add(self, result, text, host='', sender='', date='', email=''):
         """Count one classified row."""
@@ -925,6 +941,8 @@ class Stats:
         if sender:
             self.by_sender[sender] += 1
             self.sender_yours[sender] += yours
+            if result['action'] == PAUSE:
+                self.sender_pause[sender] += 1
         if date:
             self.by_date[date] += 1
             self.date_yours[date] += yours
@@ -1273,7 +1291,8 @@ def _next_steps(stats):
     if action[PAUSE]:
         steps.append(f'**Pause the worst domains.** {action[PAUSE]:,} '
                      f'bounces are receivers refusing your sending identity. '
-                     f'Continuing to send deepens it.')
+                     f'Continuing to send deepens it. Use --pause-list to '
+                     f'export the domains.')
     if action[SUPPRESS]:
         steps.append(f'**Suppress {action[SUPPRESS]:,} addresses** that will '
                      f'never accept mail. Use --suppress-list to export '
@@ -1325,6 +1344,8 @@ def run_one(text, as_json):
                        ('blocklist', 'blocklist')):
         if result[key]:
             print(f'  {label:11} {result[key]}')
+    if result['evidence']:
+        print(f"  matched     \"{result['evidence']}\"")
     return 0
 
 
@@ -1364,6 +1385,18 @@ def _out_path(name, outdir):
     return path if os.path.dirname(path) else os.path.join(outdir, path)
 
 
+# What each action asks of you, most urgent first.
+ACTION_HINTS = {
+    PAUSE: 'receivers are refusing your sending domains',
+    FIXAUTH: 'SPF, DKIM, DMARC or PTR - a DNS fix, today',
+    SUPPRESS: 'addresses never to mail again',
+    REWRITE: 'filters judged the message itself',
+    RETRY_ONCE: 'full mailboxes - one more try, then give up',
+    RETRY: 'temporary - safe to send again later',
+    REVIEW: 'could not be settled from the text alone',
+    }
+
+
 def print_summary(stats, args, out_path):
     """Print the console summary.  Return False if nothing bounced."""
     total = max(stats.total, 1)
@@ -1393,13 +1426,28 @@ def print_summary(stats, args, out_path):
                + paint(rest * (24 - filled), 'grey'))
         say(f'    {category:<15} {n:>8,}  {fraction * 100:5.1f}%  {bar}')
     say('')
+    todo = [(action, stats.action[action]) for action in ACTION_HINTS
+            if stats.action[action]]
+    if todo:
+        say(paint('    what to do', 'bold'))
+        for action, n in todo:
+            say(f'    {action:<15} {n:>8,}  {ACTION_HINTS[action]}')
+        say('')
+    if stats.blocklist:
+        named = COMMASPACE.join(f'{name} ({n:,})' for name, n
+                                in stats.blocklist.most_common(4))
+        say(f"    {paint('blocklists', 'bold')}      {named}")
+        say('')
     return True
 
 
-def _write_extras(stats, args, outdir, base, path, email_column):
-    # The optional outputs: suppression list, unread dump, diagnosis.
+def _write_extras(stats, args, outdir, base, path, use):
+    # The optional outputs: suppression list, pause list, unread dump and
+    # the diagnosis.
     if args.suppress_list:
         args.suppress_list = _out_path(args.suppress_list, outdir)
+    if args.pause_list:
+        args.pause_list = _out_path(args.pause_list, outdir)
     if args.dump_unknown:
         args.dump_unknown = _out_path(args.dump_unknown, outdir)
 
@@ -1413,9 +1461,18 @@ def _write_extras(stats, args, outdir, base, path, email_column):
         with open(args.suppress_list, 'w', encoding='utf-8') as fp:
             fp.write(NL.join(addresses) + NL)
         say(f'    {len(addresses):,} addresses -> {args.suppress_list}')
-    elif args.suppress_list and not email_column:
+    elif args.suppress_list and not use['email']:
         print('  no email column found, cannot write a suppression list',
               file=sys.stderr)
+
+    if args.pause_list and not use['sender']:
+        print('  no sending-mailbox column found, cannot write a pause list',
+              file=sys.stderr)
+    elif args.pause_list:
+        domains = stats.to_pause()
+        with open(args.pause_list, 'w', encoding='utf-8') as fp:
+            fp.write(EMPTYSTRING.join(domain + NL for domain in domains))
+        say(f'    {len(domains):,} sending domains -> {args.pause_list}')
 
     if args.dump_unknown and stats.unread:
         with open(args.dump_unknown, 'w', encoding='utf-8') as fp:
@@ -1529,44 +1586,109 @@ def run_csv(path, args):
     stats = Stats()
     _classify_file(path, out_path, delimiter, use, stats, args.all_rows)
     if print_summary(stats, args, out_path):
-        _write_extras(stats, args, outdir, base, path, use['email'])
+        _write_extras(stats, args, outdir, base, path, use)
+    return _exit_status(stats, args)
+
+
+def _exit_status(stats, args):
+    # 0 is fine, 1 an error, 2 bad arguments (argparse's own) and 3 means
+    # the bounce rate is over --fail-over.  Cron cares about the last one.
+    if args.fail_over is None:
+        return 0
+    if stats.total and not stats.empty:
+        print('  --fail-over needs a whole-campaign export; without the '
+              'leads that did not bounce there is no rate', file=sys.stderr)
+        return 1
+    return 3 if stats.rate > args.fail_over else 0
+
+
+EPILOG = """\
+whose problem it is:
+  data            the address is dead or wrong        clean the list
+  reputation      your sending identity is refused    pause, warm, delist
+  authentication  SPF, DKIM, DMARC or PTR is broken   a DNS fix, today
+  content         a filter judged the message itself  rewrite the copy
+  recipient       their mailbox refuses everyone      suppress, nothing more
+  transient       nobody's fault                      retry
+
+examples:
+  bouncesitrep export.csv --report
+  bouncesitrep export.csv -o ~/Desktop/results --suppress-list dead.txt \\
+      --pause-list pause.txt
+  bouncesitrep '550 5.1.1 user unknown'
+  bouncesitrep --reasons
+
+Feed it the whole campaign export, not just the bounces. The leads that
+did not bounce are what turn a count into a bounce rate.
+"""
+
+
+def print_reasons():
+    """Print every reason with its category, action and meaning."""
+    for category in CATEGORIES:
+        print(paint(category, 'bold', CAT_COLOUR.get(category, 'grey')))
+        for reason, (meaning, cat, action) in REASONS.items():
+            if cat == category:
+                print(f'  {reason:<24}{action:<14}{meaning}')
+        print()
     return 0
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Read bounce text from a sequencer export and say what '
-                    'is wrong.')
+        prog='bouncesitrep',
+        description='Read bounce text from a sequencer export and say whose '
+                    'problem each bounce is.',
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('input', nargs='?',
-                        help='a bounce message, or a path to a CSV export')
-    parser.add_argument('-c', '--column',
-                        help='bounce-text column (default: detect)')
-    parser.add_argument('--host-column',
-                        help='recipient mail host column (default: detect)')
-    parser.add_argument('-o', '--outdir', help='output directory')
-    parser.add_argument('--report', nargs='?', const=True, metavar='FILE',
-                        help='write a markdown diagnosis')
-    parser.add_argument('--suppress-list', metavar='FILE',
-                        help='write addresses that should never be mailed '
-                             'again')
-    parser.add_argument('--dump-unknown', metavar='FILE',
-                        help='write every message it could not read')
-    parser.add_argument('--json', action='store_true',
-                        help='JSON output for one message')
-    parser.add_argument('--banner', action='store_true',
-                        help='print the mark and exit')
-    parser.add_argument('--no-banner', action='store_true',
-                        help='skip the mark, for wrappers that drew it '
-                             'already')
-    parser.add_argument('--all-rows', action='store_true',
-                        help='keep every row in the output, not just the '
-                             'bounces')
-    parser.add_argument('--force', action='store_true',
-                        help='overwrite existing output')
-    parser.add_argument('-q', '--quiet', action='store_true',
-                        help='report only errors')
-    parser.add_argument('--version', action='version',
-                        version=f'bouncesitrep {__version__}')
+                        help='a CSV export, or one bounce message in quotes')
+
+    reading = parser.add_argument_group('reading the export')
+    reading.add_argument('-c', '--column', metavar='NAME',
+                         help='the bounce-text column (default: detected)')
+    reading.add_argument('--host-column', metavar='NAME',
+                         help='the recipient mail host column '
+                              '(default: detected)')
+    reading.add_argument('--all-rows', action='store_true',
+                         help='keep every row in the output CSV, not just '
+                              'the bounces')
+
+    writing = parser.add_argument_group(
+        'what to write',
+        'A bare filename goes in the output directory; a path is used as is.')
+    writing.add_argument('-o', '--outdir', metavar='DIR',
+                         help="where results go (default: the export's own "
+                              'folder)')
+    writing.add_argument('--report', nargs='?', const=True, metavar='FILE',
+                         help='a markdown diagnosis: the rate, the verdict '
+                              'and what to do first')
+    writing.add_argument('--suppress-list', metavar='FILE',
+                         help='addresses never to mail again')
+    writing.add_argument('--pause-list', metavar='FILE',
+                         help='sending domains receivers are refusing')
+    writing.add_argument('--dump-unknown', metavar='FILE',
+                         help='every message it could not read, one per '
+                              'line')
+    writing.add_argument('--force', action='store_true',
+                         help='overwrite earlier output')
+
+    showing = parser.add_argument_group('display and exit status')
+    showing.add_argument('--json', action='store_true',
+                         help="print one message's result as JSON")
+    showing.add_argument('--reasons', action='store_true',
+                         help='list every reason it can give, and exit')
+    showing.add_argument('--fail-over', type=float, metavar='PCT',
+                         help='exit 3 when the bounce rate is above PCT')
+    showing.add_argument('--banner', action='store_true',
+                         help='print the mark and exit')
+    showing.add_argument('--no-banner', action='store_true',
+                         help='skip the mark, for wrappers that drew it '
+                              'already')
+    showing.add_argument('-q', '--quiet', action='store_true',
+                         help='print errors only')
+    showing.add_argument('--version', action='version',
+                         version=f'bouncesitrep {__version__}')
     args = parser.parse_args()
 
     global QUIET
@@ -1575,6 +1697,8 @@ def main():
     if args.banner:
         print(paint(banner(__version__), 'cyan'))
         return 0
+    if args.reasons:
+        return print_reasons()
     if args.input is None:
         parser.error('give it a CSV export or a single bounce message')
 

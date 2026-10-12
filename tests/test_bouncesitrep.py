@@ -56,8 +56,9 @@ def category_action(text):
 def make_args(**kws):
     defaults = dict(
         column=None, host_column=None, outdir=None, report=None,
-        suppress_list=None, dump_unknown=None, force=False, quiet=True,
-        all_rows=False, banner=False, no_banner=True)
+        suppress_list=None, pause_list=None, dump_unknown=None,
+        force=False, quiet=True, all_rows=False, banner=False,
+        no_banner=True, fail_over=None)
     defaults.update(kws)
     return argparse.Namespace(**defaults)
 
@@ -878,6 +879,7 @@ class TestProviderCodes(unittest.TestCase):
                          'blocklisted')
 
 
+
 class TestMicrosoftCodes(unittest.TestCase):
     """Exchange Online's own codes, as its NDR reference defines them."""
 
@@ -1059,6 +1061,72 @@ class TestNewPhrases(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertEqual(reason_of(text), reason)
 
+
+class TestEvidence(unittest.TestCase):
+
+    def test_the_deciding_words_are_returned(self):
+        result = classify('550 5.1.1 <a@example.com>: user unknown')
+        self.assertEqual(result['evidence'], '5.1.1')
+
+    def test_unreadable_text_has_no_evidence(self):
+        self.assertEqual(classify('qqq zzz')['evidence'], '')
+
+
+class TestPauseList(FileTestCase):
+
+    HEADER = ('email', 'email_acc_name', 'last_sent_at', 'bounce_msg')
+
+    def export(self):
+        rows = []
+        # burnt.example: every bounce is a Spamhaus listing.
+        rows += [[f'a{i}@example.net', 'jo@burnt.example', '2026-09-01',
+                  SPAMHAUS] for i in range(5)]
+        # stale.example: a bad list, plus two reputation refusals.
+        rows += [[f'b{i}@example.net', 'jo@stale.example', '2026-09-01',
+                  DEAD] for i in range(8)]
+        rows += [[f'c{i}@example.net', 'jo@stale.example', '2026-09-01',
+                  SPAMHAUS] for i in range(2)]
+        return self.write_csv(rows, header=self.HEADER)
+
+    def test_only_domains_mostly_refused_on_reputation(self):
+        pause = os.path.join(self.tmp, 'pause.txt')
+        self.run_csv(self.export(), pause_list=pause)
+        self.assertEqual(read_lines(pause), ['burnt.example'])
+
+    def test_no_sender_column_is_reported(self):
+        path = self.write_csv(bounces(5, SPAMHAUS))
+        pause = os.path.join(self.tmp, 'pause.txt')
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.run_csv(path, pause_list=pause)
+        self.assertIn('no sending-mailbox column', err.getvalue())
+        self.assertFalse(os.path.exists(pause))
+
+
+class TestFailOver(FileTestCase):
+
+    def test_over_the_threshold_exits_3(self):
+        path = self.write_csv(blanks(95) + bounces(5))
+        self.assertEqual(self.run_csv(path, fail_over=2.0), 3)
+
+    def test_under_the_threshold_exits_0(self):
+        path = self.write_csv(blanks(99) + bounces(1))
+        self.assertEqual(self.run_csv(path, fail_over=2.0), 0)
+
+    def test_no_denominator_is_an_error_not_a_pass(self):
+        path = self.write_csv(bounces(5))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.run_csv(path, fail_over=2.0), 1)
+
+
+class TestReasonsGlossary(unittest.TestCase):
+
+    def test_every_reason_is_listed(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(bc.print_reasons(), 0)
+        for reason in bc.REASONS:
+            self.assertIn(reason, out.getvalue())
 
 class TestOutputLocation(FileTestCase):
     """-o governs every output.  A bare filename lands there; a full path is
