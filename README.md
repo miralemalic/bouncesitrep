@@ -46,8 +46,8 @@ $ bouncesitrep export.csv --report
     suppress             947  addresses never to mail again
     rewrite copy       1,974  filters judged the message itself
     retry once           193  full mailboxes - one more try, then give up
-    retry later          199  temporary - safe to send again later
-    review               337  could not be settled from the text alone
+    retry later          202  temporary - safe to send again later
+    review               334  could not be settled from the text alone
 
     blocklists      Spamhaus (33), Sophos XL (22), SURBL (10), SpamRL (2)
 
@@ -261,8 +261,9 @@ next to the rule in the code:
 - GMX, web.de, mail.com and 1&1: the postmaster [case pages](https://postmaster.gmx.net/en/case?c=r1102) their bounces link to
 - Mimecast: its SMTP error code page, which its bounces link to
 
-Apple's CS01 and HM08 and Outlook.com's S2017062302 are not documented by
-their vendors. Those calls rest on the corpus; the next section explains how.
+Apple's CS01 and HM08, Outlook.com's S2017062302 and the `AUP#` codes used by
+Spectrum and CenturyLink are not documented anywhere readable. Those calls
+rest on the corpus; the next section explains how.
 
 ## What it refuses to do
 
@@ -318,6 +319,9 @@ one send often accepts the next.
 | Mimecast "security policies" | 2 of 5 | rewrite the copy |
 | iCloud `[HM08]` | 182 of 268 | retry later |
 | iCloud `[CS01]` | 78 of 106 | not the address |
+| `AUP#In-1310` | 40 of 49 | retry later |
+| `AUP#In-1300` | 26 of 32 | retry later |
+| `AUP#POL` | 14 of 15 | retry later |
 
 Samples of 1,500 bounced addresses per row. Most bounced addresses are never
 mailed again, so the counts are the ones that were.
@@ -344,10 +348,13 @@ If it scores worse on your corpus, that is a real result and I want the sample.
 - English NDRs. Other languages fall through to status codes, which still work.
 - Every code in RFC 3463 has a rule, and RFC 7372's authentication codes are
   read as registered. Vendor codes are read one by one for Microsoft, Yahoo,
-  AOL, Verizon, Apple iCloud, GMX/web.de/mail.com/1&1 and Mimecast. Sophos,
-  Open-Xchange, Spectrum and Cox codes are recognised but not told apart:
-  Spectrum's table of `AUP#` codes only opens in a browser. Anything else
-  falls back to the text.
+  AOL, Verizon, Apple iCloud, GMX/web.de/mail.com/1&1, Mimecast and the
+  common `AUP#` codes. Sophos and Open-Xchange codes are recognised but not
+  told apart. Anything else falls back to the text.
+- `AUP#In-1300`, `AUP#In-1310` and `AUP#POL` hit hundreds of sending domains
+  at once, and most later sends got through, so they read as a throttle.
+  `AUP#In-1160` and `AUP#SNDR` each hit one sending domain, so they pause it.
+  Spectrum's own description of the codes was not readable.
 - The corpus is cold email, mostly to US small business domains, with some
   finance and consumer lists. Transactional or European senders will see
   different proportions, though the rules themselves are not region-specific.
@@ -360,7 +367,7 @@ If it scores worse on your corpus, that is a real result and I want the sample.
 python3 -m unittest discover -s tests -v
 ```
 
-159 tests, standard library only. Three of them are structural rather than
+162 tests, standard library only. Three of them are structural rather than
 example-based: no sending-side fault may suppress an address, no transient
 fault may suppress, and no data fault may pause a domain. Those are the
 mistakes that cost real money, so they run against every entry in the table

@@ -344,11 +344,18 @@ RULES = [
     # will never take mail again.  It arrives tagged AUP#MXRT.
     R(T_TOKEN, r'Decommission of Email to Text', 'host_unknown',
       'Verizon shut down email-to-text (vtext.com)'),
-    # Spectrum and Cox tag rejections with AUP# codes.  Spectrum's table
-    # of what each number means only loads in a browser.
-    # XXX: split this by code once someone copies that table out.
+    # AUP# codes come from Spectrum, CenturyLink and others.  Spectrum's
+    # table of the numbers only loads in a browser, so these are read from
+    # the corpus.  In-13xx and POL hit hundreds of sending domains at once,
+    # and later sends to the same addresses arrived 81-93% of the time: a
+    # throttle.  In-1160 and SNDR each hit a single sending domain.
+    R(T_TOKEN, r'\bAUP#(?:In-1160|SNDR)\b', 'blocked',
+      'ISP blocked this sending domain (AUP code)'),
+    R(T_TOKEN, r'\bAUP#(?:In-13[0-4]\d|POL)\b', 'throttled',
+      'ISP is limiting your sending IPs (AUP code) - later sends usually '
+      'land'),
     R(T_TOKEN, r'\bAUP#', 'policy_violation',
-      'ISP acceptable-use rejection (Spectrum, Cox)'),
+      'ISP acceptable-use rejection (AUP code)'),
     # iCloud Mail.  Neither code is about the address: in the corpus, when
     # the same address was mailed again later, 74% of CS01 and 68% of HM08
     # bounces were delivered.  HM07/HM08 behave like a throttle.

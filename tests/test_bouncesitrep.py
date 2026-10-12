@@ -1056,12 +1056,27 @@ class TestProviderTokens(unittest.TestCase):
         self.assertEqual((result['reason'], result['category']),
                          ('host_unknown', bc.DATA))
 
-    def test_aup_codes_are_not_called_comcast(self):
+    def test_aup_throttles_are_retried_not_paused(self):
         result = classify('<a@example.com> sender rejected. Please see '
                           'https://www.spectrum.net/support/internet for more '
                           'information. AUP#In-1310')
-        self.assertIn('Spectrum', result['detail'])
+        self.assertEqual((result['reason'], result['action']),
+                         ('throttled', bc.RETRY))
         self.assertEqual(result['rejected_by'], 'spectrum')
+        self.assertEqual(reason_of('<a@example.com> sender rejected AUP#POL'),
+                         'throttled')
+
+    def test_aup_sender_blocks_pause_the_domain(self):
+        for code in ('SNDR', 'In-1160'):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    category_action(f'<a@example.com> sender rejected '
+                                    f'AUP#{code}'),
+                    (bc.REPUTATION, bc.PAUSE))
+
+    def test_unfamiliar_aup_codes_stay_policy(self):
+        self.assertEqual(reason_of('550 rejected AUP#CDRBL'),
+                         'policy_violation')
 
     def test_icloud_cs01_is_read_from_the_token(self):
         result = classify('[CS01] Message rejected due to local policy. '
