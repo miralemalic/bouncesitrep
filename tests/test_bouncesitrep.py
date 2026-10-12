@@ -1088,6 +1088,10 @@ class TestEvidence(unittest.TestCase):
         result = classify('550 5.1.1 <a@example.com>: user unknown')
         self.assertEqual(result['evidence'], '5.1.1')
 
+    def test_abandoned_shows_both_halves_of_the_call(self):
+        result = classify('552 5.2.2 out of storage space and inactive')
+        self.assertEqual(result['evidence'], '5.2.2 ... inactive')
+
     def test_unreadable_text_has_no_evidence(self):
         self.assertEqual(classify('qqq zzz')['evidence'], '')
 

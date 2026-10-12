@@ -30,7 +30,7 @@ import itertools
 import collections
 
 
-__version__ = '2.1.0'
+__version__ = '2.2.0'
 
 __all__ = [
     'build_report',
@@ -755,8 +755,10 @@ def classify(text, recipient_host=''):
     if reason == 'mailbox_full' and text:
         permanent = bool(quotacre.search(text)) or (
             smtp and smtp.group(1).startswith('5'))
-        if permanent and inactivecre.search(text):
+        mo = inactivecre.search(text)
+        if permanent and mo:
             reason = 'mailbox_full_abandoned'
+            evidence = f'{evidence} ... {mo.group(0)}'
             detail = ('permanently over quota and the receiver calls it '
                       'inactive')
 
