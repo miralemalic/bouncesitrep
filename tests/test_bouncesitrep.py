@@ -1027,6 +1027,26 @@ class TestProviderTokens(unittest.TestCase):
         self.assertEqual(result['_tier'], bc.T_TOKEN)
         self.assertEqual(result['rejected_by'], 'apple')
 
+    def test_icloud_hm08_is_a_throttle_not_a_dead_address(self):
+        result = classify('[HM08] Message rejected due to local policy. '
+                          'Please visit https://support.apple.com/HT204137')
+        self.assertEqual((result['reason'], result['action']),
+                         ('throttled', bc.RETRY))
+
+    def test_mimecast_security_policies_without_the_wrapper(self):
+        # The Exchange wrapper usually says "Mimecast detected message as
+        # spam"; without it the remote text alone must still be read.
+        self.assertEqual(
+            reason_of('Email rejected due to security policies - '
+                      'https://community.mimecast.com/docs/DOC-1369#554'),
+            'spam_detected')
+
+    def test_one_persons_block_list_is_not_a_domain_pause(self):
+        result = classify('550 Envelope blocked - User Entry - '
+                          'https://community.mimecast.com/docs/DOC-1369#550')
+        self.assertEqual((result['category'], result['action']),
+                         (bc.RECIPIENT, bc.SUPPRESS))
+
     def test_abusix_is_a_named_blocklist(self):
         result = classify('Invalid Sender. Your domain has been blacklisted '
                           'by Abusix (https://lookup.abusix.com/)')

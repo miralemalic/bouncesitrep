@@ -192,6 +192,9 @@ REASONS = {
     'mail_loop': (
         'The address forwards in a loop and never arrives', RECIPIENT,
         SUPPRESS),
+    'recipient_blocked': (
+        'This person has put you on their own block list', RECIPIENT,
+        SUPPRESS),
 
     'blocklisted': (
         'Your sending domain or IP is on a public blocklist', REPUTATION,
@@ -348,10 +351,20 @@ RULES = [
     # XXX: once it can be read, split this by code.
     R(T_TOKEN, r'\bAUP#', 'policy_violation',
       'ISP acceptable-use rejection (Spectrum, Cox)'),
-    # iCloud Mail.  CS01 comes from its Cloudmark filter and lands on any
-    # cold sender alike, so rotating domains does not help.
+    # iCloud Mail.  Neither code is about the address: in our corpus, when
+    # the same address was mailed again later, 74% of CS01 and 68% of HM08
+    # bounces were delivered.  HM07/HM08 behave like a throttle.
     R(T_TOKEN, r'\[CS01\]', 'policy_violation',
-      'iCloud Mail refused it on policy (CS01)'),
+      "iCloud Mail's filter refused this send (CS01)"),
+    R(T_TOKEN, r'\[HM0[78]\]', 'throttled',
+      'iCloud Mail refused this send (HM07/HM08) - later ones often land'),
+    # Mimecast links each rejection to an anchor on its error code page,
+    # community.mimecast.com/docs/DOC-1369.  "Security policies" is its spam
+    # and malware scanning; "User Entry" is one person's blocked senders.
+    R(T_TOKEN, r'Email rejected due to security policies', 'spam_detected',
+      'Mimecast: spam or malware signature in the message'),
+    R(T_TOKEN, r'Envelope blocked - User Entry', 'recipient_blocked',
+      "Mimecast: the recipient's own blocked senders list"),
     # Sophos and Open-Xchange gateways emit opaque codes with no prose.
     R(T_TOKEN, r'\bXGEMAIL_\d+', 'blocked',
       'Sophos gateway rejected the message'),
