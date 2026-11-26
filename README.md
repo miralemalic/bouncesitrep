@@ -269,7 +269,7 @@ guess.
 ## How well it works
 
 Built against **254,054 real bounces** from live cold email infrastructure:
-eight sending workspaces, 1,482 sending domains and 72,263 recipient domains,
+50+ sending workspaces, 1,482 sending domains and 72,263 recipient domains,
 sent between June and October 2026.
 
 ```
