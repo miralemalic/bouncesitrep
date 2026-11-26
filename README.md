@@ -358,6 +358,10 @@ fault may suppress, and no data fault may pause a domain. Those are the
 mistakes that cost real money, so they run against every entry in the table
 rather than against a handful of samples.
 
+## See also
+
+[Inbox Sitrep](https://github.com/miralemalic/inboxsitrep) checks a whole cold email setup every few hours and sorts bounces into the same categories.
+
 ## License
 
 MIT. See [LICENSE](LICENSE). Do what you want with it. Don't blame me.
