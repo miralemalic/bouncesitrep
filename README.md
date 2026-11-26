@@ -1,4 +1,4 @@
-# bouncesitrep
+# Bounce Sitrep
 
 [![tests](https://github.com/miralemalic/bouncesitrep/actions/workflows/tests.yml/badge.svg)](https://github.com/miralemalic/bouncesitrep/actions/workflows/tests.yml)
 
